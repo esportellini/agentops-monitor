@@ -132,6 +132,25 @@ class Transport:
                 return None
         return None
 
+    def get(self, path: str) -> dict[str, Any] | None:
+        url = f"{self._base}{path}"
+        for attempt in range(self._max_retries):
+            try:
+                resp = self._client.get(url)
+                if resp.status_code in (429, 502, 503, 504):
+                    self._sleep_backoff(attempt)
+                    continue
+                if resp.is_success:
+                    return resp.json()
+                sdk_warn("agentops: HTTP %d on %s", resp.status_code, path)
+                return None
+            except (httpx.TimeoutException, httpx.NetworkError):
+                self._sleep_backoff(attempt)
+            except Exception as exc:
+                sdk_warn("agentops: unexpected error on %s: %s", path, exc)
+                return None
+        return None
+
     def _send_batch(self, items: list[dict[str, Any]]) -> None:
         if not items:
             return
@@ -174,9 +193,20 @@ class Transport:
         self.post(f"/ingest/traces/{external_trace_id}/events", payload)
 
     def check_tool(
-        self, external_trace_id: str, tool_name: str, target_url: str | None = None
+        self, external_trace_id: str, tool_name: str, target_url: str | None = None,
+        *, external_span_id: str | None = None, external_request_id: str | None = None,
+        approval_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         payload = {"external_trace_id": external_trace_id, "tool_name": tool_name}
         if target_url is not None:
             payload["target_url"] = target_url
+        if external_span_id is not None:
+            payload["external_span_id"] = external_span_id
+        if external_request_id is not None:
+            payload["external_request_id"] = external_request_id
+        if approval_context is not None:
+            payload["approval_context"] = approval_context
         return self.post("/ingest/policy/check-tool", payload)
+
+    def get_approval(self, approval_id: int) -> dict[str, Any] | None:
+        return self.get(f"/ingest/policy/approvals/{approval_id}")

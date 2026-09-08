@@ -12,6 +12,7 @@ const nav = [
   { href: "/costs",       label: "Costs" },
   { href: "/evaluations", label: "Evaluations" },
   { href: "/security",    label: "Security" },
+  { href: "/approvals",   label: "Approvals" },
   { href: "/alerts",      label: "Alerts" },
   { href: "/audit-logs",  label: "Audit Logs" },
   { href: "/api-keys",    label: "API Keys" },

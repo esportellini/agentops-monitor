@@ -78,12 +78,16 @@ class ToolCallCreate(BaseModel):
     duration_ms: int | None = None
     requires_approval: bool = False
     blocked_reason: str | None = None
+    approval_id: int | None = None
 
 
 class ToolPolicyCheck(BaseModel):
     external_trace_id: str = Field(..., max_length=255)
     tool_name: str = Field(..., min_length=1, max_length=255)
     target_url: str | None = Field(default=None, max_length=2048)
+    external_span_id: str | None = Field(default=None, max_length=255)
+    external_request_id: str | None = Field(default=None, min_length=1, max_length=255)
+    approval_context: dict[str, Any] | None = None
 
 
 class TraceLimitStateOut(BaseModel):
@@ -100,6 +104,9 @@ class ToolPolicyCheckOut(BaseModel):
     reason: str
     policy_id: int | None
     limits: TraceLimitStateOut
+    approval_id: int | None = None
+    external_request_id: str | None = None
+    approval_status: Literal["pending", "approved", "rejected", "used"] | None = None
 
 
 # ── ModelCall ──────────────────────────────────────────────────────────────────

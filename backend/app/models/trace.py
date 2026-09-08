@@ -131,6 +131,12 @@ class ToolCall(Base, TimestampMixin):
     approved_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    approval_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tool_approvals.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
 
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     input_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

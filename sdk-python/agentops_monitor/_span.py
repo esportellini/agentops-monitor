@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import traceback
 import time
+from uuid import uuid4
 from typing import TYPE_CHECKING, Any
 
 from agentops_monitor._utils import new_id, safe_json, utcnow_iso
 from agentops_monitor.policy import (
     ApprovalRequiredError,
+    ApprovalRejectedError,
+    ApprovalTimeoutError,
     PolicyBlockedError,
     PolicyDecision,
     PolicyUnavailableError,
@@ -121,6 +124,7 @@ class Span:
         duration_ms: int | None = None,
         requires_approval: bool = False,
         blocked_reason: str | None = None,
+        approval_id: int | None = None,
     ) -> "Span":
         payload: dict[str, Any] = {
             "tool_name": tool_name,
@@ -135,14 +139,33 @@ class Span:
             payload["duration_ms"] = duration_ms
         if blocked_reason:
             payload["blocked_reason"] = blocked_reason
+        if approval_id is not None:
+            payload["approval_id"] = approval_id
 
         self._pending_child_calls.append(("tool", payload))
         return self
 
-    def check_tool(self, tool_name: str, *, target_url: str | None = None) -> ToolPolicyDecision:
+    def check_tool(
+        self,
+        tool_name: str,
+        *,
+        target_url: str | None = None,
+        external_request_id: str | None = None,
+        approval_context: dict[str, Any] | None = None,
+    ) -> ToolPolicyDecision:
         """Ask the backend for a decision without sending tool arguments."""
         try:
-            payload = self._transport.check_tool(self._trace_id, tool_name, target_url)
+            payload = self._transport.check_tool(
+                self._trace_id,
+                tool_name,
+                target_url,
+                external_span_id=self.span_id,
+                external_request_id=external_request_id or str(uuid4()),
+                approval_context=(
+                    self._apply_redact(safe_json(approval_context))
+                    if approval_context is not None else None
+                ),
+            )
             if payload is not None:
                 return ToolPolicyDecision(
                     decision=PolicyDecision(payload["decision"]),
@@ -150,6 +173,9 @@ class Span:
                     reason=str(payload["reason"]),
                     policy_id=payload.get("policy_id"),
                     limits=payload.get("limits") or {},
+                    approval_id=payload.get("approval_id"),
+                    external_request_id=payload.get("external_request_id"),
+                    approval_status=payload.get("approval_status"),
                 )
         except Exception:
             pass
@@ -161,19 +187,35 @@ class Span:
 
     def run_tool(
         self, tool_name: str, fn: Any, *args: Any,
-        target_url: str | None = None, **kwargs: Any,
+        target_url: str | None = None,
+        approval_context: dict[str, Any] | None = None,
+        wait_for_approval: bool = False,
+        approval_timeout: float = 120.0,
+        approval_poll_interval: float = 1.0,
+        **kwargs: Any,
     ) -> Any:
         """Check policy, execute an allowed callable, and record the outcome."""
-        result = self.check_tool(tool_name, target_url=target_url)
+        request_id = str(uuid4())
+        result = self.check_tool(
+            tool_name,
+            target_url=target_url,
+            external_request_id=request_id,
+            approval_context=approval_context,
+        )
         if result.decision == PolicyDecision.BLOCK:
             self.add_tool_call(tool_name, status="BLOCKED", blocked_reason=result.reason_code)
             raise PolicyBlockedError(result)
         if result.decision == PolicyDecision.REQUIRE_APPROVAL:
-            self.add_tool_call(
-                tool_name, status="PENDING_APPROVAL", requires_approval=True,
-                blocked_reason=result.reason_code,
+            if not wait_for_approval:
+                raise ApprovalRequiredError(result)
+            result = self._wait_for_approval(
+                result,
+                tool_name=tool_name,
+                target_url=target_url,
+                approval_context=approval_context,
+                timeout=approval_timeout,
+                poll_interval=approval_poll_interval,
             )
-            raise ApprovalRequiredError(result)
         if result.decision == PolicyDecision.UNAVAILABLE and self._policy_fail_mode == "closed":
             self.add_tool_call(tool_name, status="BLOCKED", blocked_reason=result.reason_code)
             raise PolicyUnavailableError(result)
@@ -186,14 +228,86 @@ class Span:
                 tool_name, output={"error_type": type(exc).__name__}, status="ERROR",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 blocked_reason=(result.reason_code if result.decision == PolicyDecision.UNAVAILABLE else None),
+                approval_id=result.approval_id,
             )
             raise
         self.add_tool_call(
             tool_name, output=output, status="SUCCESS",
             duration_ms=int((time.monotonic() - started) * 1000),
             blocked_reason=(result.reason_code if result.decision == PolicyDecision.UNAVAILABLE else None),
+            approval_id=result.approval_id,
         )
         return output
+
+    def _wait_for_approval(
+        self,
+        result: ToolPolicyDecision,
+        *,
+        tool_name: str,
+        target_url: str | None,
+        approval_context: dict[str, Any] | None,
+        timeout: float,
+        poll_interval: float,
+    ) -> ToolPolicyDecision:
+        if result.approval_id is None or result.external_request_id is None:
+            raise PolicyUnavailableError(ToolPolicyDecision(
+                PolicyDecision.UNAVAILABLE,
+                "APPROVAL_RESPONSE_INVALID",
+                "Approval response is missing its identity",
+            ))
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            if time.monotonic() >= deadline:
+                raise ApprovalTimeoutError(ToolPolicyDecision(
+                    PolicyDecision.REQUIRE_APPROVAL,
+                    "APPROVAL_TIMEOUT",
+                    "Timed out waiting for approval",
+                    approval_id=result.approval_id,
+                    external_request_id=result.external_request_id,
+                    approval_status="pending",
+                ))
+            status = self._transport.get_approval(result.approval_id)
+            if status is None:
+                raise PolicyUnavailableError(ToolPolicyDecision(
+                    PolicyDecision.UNAVAILABLE,
+                    "APPROVAL_SERVICE_UNAVAILABLE",
+                    "Approval status is unavailable",
+                    approval_id=result.approval_id,
+                    external_request_id=result.external_request_id,
+                    approval_status=result.approval_status,
+                ))
+            if status.get("status") == "rejected":
+                raise ApprovalRejectedError(ToolPolicyDecision(
+                    PolicyDecision.BLOCK,
+                    "APPROVAL_REJECTED",
+                    "Approval was rejected",
+                    approval_id=result.approval_id,
+                    external_request_id=result.external_request_id,
+                    approval_status="rejected",
+                ))
+            if status.get("status") == "used":
+                raise PolicyBlockedError(ToolPolicyDecision(
+                    PolicyDecision.BLOCK,
+                    "APPROVAL_ALREADY_USED",
+                    "Approval was already used",
+                    approval_id=result.approval_id,
+                    external_request_id=result.external_request_id,
+                    approval_status="used",
+                ))
+            if status.get("status") == "approved":
+                revalidated = self.check_tool(
+                    tool_name,
+                    target_url=target_url,
+                    external_request_id=result.external_request_id,
+                    approval_context=approval_context,
+                )
+                if revalidated.decision == PolicyDecision.UNAVAILABLE:
+                    raise PolicyUnavailableError(revalidated)
+                if revalidated.decision == PolicyDecision.BLOCK:
+                    raise PolicyBlockedError(revalidated)
+                if revalidated.decision == PolicyDecision.ALLOW:
+                    return revalidated
+            time.sleep(max(0.01, poll_interval))
 
     def add_model_call(
         self,

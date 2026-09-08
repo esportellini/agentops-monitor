@@ -39,6 +39,7 @@ AgentOps Monitor é uma plataforma B2B multi-tenant que coleta traces hierárqui
 - Detecção de prompt injection e SQL perigoso com agregação de risco da trace
 - Políticas ativas por agente para ferramentas, domínios, captura, ações de segurança e limites por trace
 - Preflight autenticado para bloquear ou exigir aprovação antes da execução de uma ferramenta
+- Aprovação humana por tentativa, com revalidação e consumo único
 - Detecção post-hoc de violações sem reescrever o status informado pela aplicação
 
 ### Semântica das políticas
@@ -53,8 +54,9 @@ há model calls sem preço e o custo conhecido não excedeu o limite, o estado d
 orçamento é `UNKNOWN`.
 
 As ações `detect`, `redact`, `alert` e `block` são registradas no finding. Nesta
-fase, `alert` não cria incidentes e `REQUIRE_APPROVAL` não cria nem resolve uma
-solicitação de aprovação. `block` substitui o conteúdo correspondente antes da
+fase, `alert` não cria incidentes. `REQUIRE_APPROVAL` cria uma solicitação humana
+por tentativa, decidida por membros com role `ANALYST` ou superior. `block`
+substitui o conteúdo correspondente antes da
 persistência. Mesmo com captura de entradas ou saídas desativada, o backend faz a
 varredura em memória e guarda somente os findings seguros.
 
@@ -173,6 +175,28 @@ with client.trace(name="responder-pergunta") as trace:
 client.flush()
 ```
 
+Para aguardar uma decisão humana, mantendo uma solicitação por tentativa:
+
+```python
+resultado = span.run_tool(
+    "send_email",
+    send_email,
+    wait_for_approval=True,
+    approval_timeout=120,
+    approval_context={
+        "recipient_group": "finance",
+        "operation": "send-monthly-report",
+    },
+)
+```
+
+Cada chamada gera um `external_request_id` opaco. Retries da mesma tentativa
+reutilizam a solicitação; uma chamada nova gera outra. Após aprovação, o backend
+revalida tools, domínio e limites. A aprovação é consumida pela primeira ToolCall
+executada. Rejeição lança `ApprovalRejectedError`; timeout lança
+`ApprovalTimeoutError` e mantém a solicitação pendente. Depois de uma resposta
+`REQUIRE_APPROVAL`, indisponibilidade nunca usa fail-open.
+
 Para impedir a execução antes de chamar uma ferramenta:
 
 ```python
@@ -230,6 +254,7 @@ Migrations (ordem):
 6. `0006_security` — agent_policies, tool_approvals, security findings
 7. `0007_evaluations` — expand evaluation tables
 8. `0008_authoritative_pricing` — pricing por organização, status e provenance de custo
+9. `0009_tool_approval_runtime` — approval idempotente, consumo único e provenance
 
 ---
 
@@ -286,7 +311,7 @@ preços atuais dos providers. Pricing é versionado e configurável por vigênci
 ## Limitações
 
 - Providers reais (OpenAI, Anthropic) nas avaliações requerem integração adicional
-- Aprovações humanas e alertas não são criados automaticamente pelo enforcement de políticas
+- Alertas não são criados automaticamente pelo enforcement de políticas
 - Notificações externas (Slack, email) estão preparadas na estrutura mas não implementadas
 - SSO (SAML/OIDC) não implementado nesta versão
 - Streaming de ingestão não suportado (batches recomendados para alto volume)

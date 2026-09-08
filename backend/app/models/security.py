@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -114,6 +115,12 @@ class ToolApproval(Base, TimestampMixin):
     human sign-off per agent policy.
     """
     __tablename__ = "tool_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "external_request_id",
+            name="uq_tool_approval_org_external_request",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = mapped_column(
@@ -135,9 +142,13 @@ class ToolApproval(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    external_request_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
     tool_input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    target_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     # "pending" | "approved" | "rejected"
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

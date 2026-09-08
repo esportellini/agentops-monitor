@@ -70,3 +70,12 @@ client = AgentOps(api_key="...", redact_fn=redact)
 
 The SDK never raises exceptions to your application due to observability failures.
 If the backend is unreachable, calls are silently logged and dropped.
+
+## Human approvals
+
+`Span.check_tool()` creates or reuses a one-time approval when policy returns
+`REQUIRE_APPROVAL`. `Span.run_tool()` is non-blocking by default and raises
+`ApprovalRequiredError` with the approval identity. Set `wait_for_approval=True`
+to poll at a bounded interval, revalidate policy after approval, execute once,
+and attach `approval_id` to ToolCall telemetry. Rejection, timeout, and approval
+service unavailability have distinct typed exceptions and never execute the tool.

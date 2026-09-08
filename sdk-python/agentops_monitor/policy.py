@@ -20,12 +20,31 @@ class ToolPolicyDecision:
     reason: str
     policy_id: int | None = None
     limits: dict[str, Any] = field(default_factory=dict)
+    approval_id: int | None = None
+    external_request_id: str | None = None
+    approval_status: str | None = None
 
 
 class PolicyError(RuntimeError):
     def __init__(self, result: ToolPolicyDecision):
         super().__init__(result.reason)
         self.result = result
+
+    @property
+    def approval_id(self) -> int | None:
+        return self.result.approval_id
+
+    @property
+    def external_request_id(self) -> str | None:
+        return self.result.external_request_id
+
+    @property
+    def reason_code(self) -> str:
+        return self.result.reason_code
+
+    @property
+    def status(self) -> str | None:
+        return self.result.approval_status
 
 
 class PolicyBlockedError(PolicyError):
@@ -37,4 +56,12 @@ class ApprovalRequiredError(PolicyError):
 
 
 class PolicyUnavailableError(PolicyError):
+    pass
+
+
+class ApprovalRejectedError(PolicyError):
+    pass
+
+
+class ApprovalTimeoutError(PolicyError):
     pass

@@ -69,6 +69,25 @@ deduplicated `tool_unauthorized` or `domain_blocked` finding while preserving th
 reported `SUCCESS` or `ERROR` status. Blocked and approval-pending telemetry does
 not create a post-hoc violation.
 
+## Human approval lifecycle
+
+When preflight returns `REQUIRE_APPROVAL`, the backend creates or reuses one
+`ToolApproval` identified by `(organization_id, external_request_id)`. The ID
+represents one invocation attempt. A reviewer with `ANALYST` role or higher can
+make the final transition from `pending` to `approved` or `rejected`; a conditional
+database update ensures only the first decision wins.
+
+Approval never bypasses current policy. The SDK repeats preflight with the same
+request ID, and the backend rechecks tool rules, domains, token limits, cost
+limits, and active policy state. A successful ToolCall stores `approval_id`,
+atomically sets `used_at`, and rejects later execution attempts. Telemetry retries
+return the existing ToolCall.
+
+`approval_context` is optional and explicit. It passes through the structural
+scanner and policy actions before storage. Target URLs retain only safe scheme,
+hostname, port, and path; userinfo, query, and fragment are removed, and the
+remaining value is scanned. Audit records contain identifiers and outcomes.
+
 Capture flags are enforced after scanning. This lets the backend detect and
 record safe findings while persisting `null` for disabled inputs or outputs.
 
@@ -94,7 +113,6 @@ Each batch item runs inside a SQLAlchemy nested transaction. A constraint failur
 
 ## Not implemented yet
 
-- runtime tool-approval creation and suspension;
 - alert evaluation or external dispatch from ingest;
 - provider-backed security classification;
 - background processing.

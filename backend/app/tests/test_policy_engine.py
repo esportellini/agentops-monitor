@@ -128,7 +128,12 @@ async def test_preflight_uses_trace_agent_and_returns_approval(client: AsyncClie
         "external_trace_id": "preflight-trace", "tool_name": "deploy",
     }, headers=_headers(key))
     assert response.status_code == 200
-    assert response.json() == {
+    data = response.json()
+    assert data | {
+        "approval_id": data["approval_id"],
+        "external_request_id": data["external_request_id"],
+        "approval_status": data["approval_status"],
+    } == {
         "decision": "REQUIRE_APPROVAL",
         "reason_code": "TOOL_REQUIRES_APPROVAL",
         "reason": "Tool requires approval",
@@ -137,6 +142,9 @@ async def test_preflight_uses_trace_agent_and_returns_approval(client: AsyncClie
             "token_state": "NOT_CONFIGURED", "cost_state": "NOT_CONFIGURED",
             "total_tokens": 0, "known_cost_usd": 0.0, "unpriced_model_calls": 0,
         },
+        "approval_id": data["approval_id"],
+        "external_request_id": data["external_request_id"],
+        "approval_status": "pending",
     }
 
 

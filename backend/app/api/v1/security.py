@@ -18,6 +18,8 @@ from app.models.alert import AlertIncident, AlertRule
 from app.models.enums import MemberRole, Severity
 from app.models.security import AgentPolicy, SecurityFinding, ToolApproval
 from app.models.project import Agent, Project
+from app.models.trace import Trace
+from app.services.approvals import transition_approval
 from app.services.policy import normalize_policy_list
 from app.services import alerts as alerts_svc
 from app.services.security import scan_text, ALL_FINDING_TYPES, get_severity
@@ -318,68 +320,93 @@ async def update_policy(
 
 # ── Tool approvals ────────────────────────────────────────────────────────────
 
+class ApprovalReview(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
 @router.get("/tool-approvals")
 async def list_approvals(
     status: str | None = Query(default=None),
+    agent_id: int | None = Query(default=None),
+    tool: str | None = Query(default=None, max_length=255),
     limit: int = Query(default=50, le=200),
     ctx: OrgContext = Depends(require_org_member),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(ToolApproval).where(ToolApproval.organization_id == ctx.org_id)
     if status:
-        q = q.where(ToolApproval.status == status)
+        if status not in {"pending", "approved", "rejected", "used"}:
+            raise HTTPException(status_code=422, detail="Invalid approval status")
+        if status == "used":
+            q = q.where(ToolApproval.used_at.isnot(None))
+        else:
+            q = q.where(ToolApproval.status == status, ToolApproval.used_at.is_(None))
+    if agent_id is not None:
+        q = q.where(ToolApproval.agent_id == agent_id)
+    if tool:
+        q = q.where(ToolApproval.tool_name == tool.strip().lower())
     rows = (await db.execute(q.order_by(ToolApproval.created_at.desc()).limit(limit))).scalars().all()
-    return {"items": [_approval_out(a) for a in rows]}
+    return {"items": [await _approval_out(db, a) for a in rows]}
+
+
+@router.get("/tool-approvals/{approval_id}")
+async def get_approval(
+    approval_id: int,
+    ctx: OrgContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db),
+):
+    approval = await db.scalar(select(ToolApproval).where(
+        ToolApproval.id == approval_id,
+        ToolApproval.organization_id == ctx.org_id,
+    ))
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    return await _approval_out(db, approval)
 
 
 @router.post("/tool-approvals/{approval_id}/approve")
 async def approve_tool(
     approval_id: int,
-    payload: Annotated[dict, Body()] = {},
+    payload: ApprovalReview,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    a = (await db.execute(
-        select(ToolApproval).where(
-            ToolApproval.id == approval_id,
-            ToolApproval.organization_id == ctx.org_id,
+    a = await transition_approval(
+        db, approval_id=approval_id, organization_id=ctx.org_id,
+        reviewer_id=ctx.user_id, outcome="approved", note=payload.note,
+    )
+    if a is None:
+        exists = await db.scalar(select(ToolApproval.id).where(
+            ToolApproval.id == approval_id, ToolApproval.organization_id == ctx.org_id,
+        ))
+        raise HTTPException(
+            status_code=409 if exists else 404,
+            detail="Approval already decided" if exists else "Approval request not found",
         )
-    )).scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Approval request not found")
-    if a.status != "pending":
-        raise HTTPException(status_code=409, detail=f"Already {a.status}")
-    a.status = "approved"
-    a.reviewed_by_id = ctx.user_id
-    a.reviewed_at = datetime.now(timezone.utc)
-    a.review_note = payload.get("note")
     await db.commit()
-    return _approval_out(a)
+    return await _approval_out(db, a)
 
 
 @router.post("/tool-approvals/{approval_id}/reject")
 async def reject_tool(
     approval_id: int,
-    payload: Annotated[dict, Body()] = {},
+    payload: ApprovalReview,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    a = (await db.execute(
-        select(ToolApproval).where(
-            ToolApproval.id == approval_id,
-            ToolApproval.organization_id == ctx.org_id,
+    a = await transition_approval(
+        db, approval_id=approval_id, organization_id=ctx.org_id,
+        reviewer_id=ctx.user_id, outcome="rejected", note=payload.note,
+    )
+    if a is None:
+        exists = await db.scalar(select(ToolApproval.id).where(
+            ToolApproval.id == approval_id, ToolApproval.organization_id == ctx.org_id,
+        ))
+        raise HTTPException(
+            status_code=409 if exists else 404,
+            detail="Approval already decided" if exists else "Approval request not found",
         )
-    )).scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Approval request not found")
-    if a.status != "pending":
-        raise HTTPException(status_code=409, detail=f"Already {a.status}")
-    a.status = "rejected"
-    a.reviewed_by_id = ctx.user_id
-    a.reviewed_at = datetime.now(timezone.utc)
-    a.review_note = payload.get("note")
     await db.commit()
-    return _approval_out(a)
+    return await _approval_out(db, a)
 
 
 # ── Alert rules ───────────────────────────────────────────────────────────────
@@ -504,19 +531,27 @@ def _policy_out(p: AgentPolicy) -> dict:
     }
 
 
-def _approval_out(a: ToolApproval) -> dict:
+async def _approval_out(db: AsyncSession, a: ToolApproval) -> dict:
+    trace = await db.scalar(select(Trace).where(Trace.id == a.trace_id)) if a.trace_id else None
+    agent = await db.scalar(select(Agent).where(Agent.id == a.agent_id)) if a.agent_id else None
     return {
         "id": a.id,
         "organization_id": a.organization_id,
         "trace_id": a.trace_id,
         "span_id": a.span_id,
         "agent_id": a.agent_id,
+        "agent_name": agent.name if agent else None,
+        "external_request_id": a.external_request_id,
         "tool_name": a.tool_name,
-        "tool_input": a.tool_input,
-        "status": a.status,
+        "approval_context": a.tool_input,
+        "target_url": a.target_url,
+        "trace_name": trace.name if trace else None,
+        "external_trace_id": trace.external_trace_id if trace else None,
+        "status": "used" if a.used_at is not None else a.status,
         "review_note": a.review_note,
         "reviewed_by_id": a.reviewed_by_id,
         "reviewed_at": a.reviewed_at.isoformat() if a.reviewed_at else None,
+        "used_at": a.used_at.isoformat() if a.used_at else None,
         "created_at": a.created_at.isoformat(),
     }
 

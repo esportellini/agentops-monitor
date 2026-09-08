@@ -35,7 +35,10 @@ from app.schemas.ingest import (
 from app.services import ingest as ingest_svc
 from app.services.ingest import IngestError
 from app.repositories import trace as trace_repo
-from app.services.policy import evaluate_tool_preflight
+from app.services.approvals import check_tool_with_approval
+from app.models.security import ToolApproval
+from app.models.trace import Trace
+from sqlalchemy import select
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 log = get_logger(__name__)
@@ -124,19 +127,58 @@ async def policy_check_tool(
     )
     if trace is None or (ctx.project_id is not None and trace.project_id != ctx.project_id):
         raise HTTPException(status_code=404, detail="Trace not found")
-    result = await evaluate_tool_preflight(db, trace, body.tool_name, body.target_url)
+    result = await check_tool_with_approval(
+        db,
+        trace=trace,
+        tool_name=body.tool_name,
+        target_url=body.target_url,
+        external_request_id=body.external_request_id,
+        external_span_id=body.external_span_id,
+        approval_context=body.approval_context,
+    )
+    await db.commit()
+    policy = result.policy
     return {
-        "decision": result.decision.value,
-        "reason_code": result.reason_code,
-        "reason": result.reason,
-        "policy_id": result.policy_id,
+        "decision": policy.decision.value,
+        "reason_code": policy.reason_code,
+        "reason": policy.reason,
+        "policy_id": policy.policy_id,
         "limits": {
-            "token_state": result.limits.token_state.value,
-            "cost_state": result.limits.cost_state.value,
-            "total_tokens": result.limits.total_tokens,
-            "known_cost_usd": float(result.limits.known_cost_usd),
-            "unpriced_model_calls": result.limits.unpriced_model_calls,
+            "token_state": policy.limits.token_state.value,
+            "cost_state": policy.limits.cost_state.value,
+            "total_tokens": policy.limits.total_tokens,
+            "known_cost_usd": float(policy.limits.known_cost_usd),
+            "unpriced_model_calls": policy.limits.unpriced_model_calls,
         },
+        "approval_id": result.approval_id,
+        "external_request_id": result.external_request_id,
+        "approval_status": result.approval_status,
+    }
+
+
+@router.get("/policy/approvals/{approval_id}")
+async def policy_approval_status(
+    approval_id: int,
+    ctx: IngestContext = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    query = (
+        select(ToolApproval)
+        .join(Trace, Trace.id == ToolApproval.trace_id)
+        .where(
+            ToolApproval.id == approval_id,
+            ToolApproval.organization_id == ctx.organization_id,
+        )
+    )
+    if ctx.project_id is not None:
+        query = query.where(Trace.project_id == ctx.project_id)
+    approval = await db.scalar(query)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return {
+        "approval_id": approval.id,
+        "external_request_id": approval.external_request_id,
+        "status": "used" if approval.used_at is not None else approval.status,
     }
 
 @router.post("/spans/{external_span_id}/tool-calls", status_code=status.HTTP_201_CREATED)
@@ -149,7 +191,10 @@ async def tool_call_create(
     try:
         tc = await ingest_svc.create_tool_call(db, ctx, external_span_id, body)
         await db.commit()
-        return {"id": tc.id, "span_id": tc.span_id, "tool_name": tc.tool_name, "status": tc.status}
+        return {
+            "id": tc.id, "span_id": tc.span_id, "tool_name": tc.tool_name,
+            "status": tc.status, "approval_id": tc.approval_id,
+        }
     except IngestError as e:
         raise _err(e)
 

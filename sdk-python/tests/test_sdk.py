@@ -26,8 +26,8 @@ import respx
 import httpx
 
 from agentops_monitor import (
-    AgentOps, Trace, Span, ApprovalRequiredError, PolicyBlockedError,
-    PolicyDecision, PolicyUnavailableError,
+    AgentOps, Trace, Span, ApprovalRejectedError, ApprovalRequiredError,
+    ApprovalTimeoutError, PolicyBlockedError, PolicyDecision, PolicyUnavailableError,
 )
 from agentops_monitor._transport import Transport
 from agentops_monitor._utils import safe_json, mask_key
@@ -49,10 +49,16 @@ def ok_response(data: dict | None = None) -> httpx.Response:
 
 
 def policy_response(decision: str, code: str) -> httpx.Response:
-    return ok_response({
+    data = {
         "decision": decision, "reason_code": code, "reason": code,
         "policy_id": 7, "limits": {},
-    })
+    }
+    if decision == "REQUIRE_APPROVAL":
+        data.update({
+            "approval_id": 123, "external_request_id": "attempt-123",
+            "approval_status": "pending",
+        })
+    return ok_response(data)
 
 
 @respx.mock
@@ -73,25 +79,18 @@ def test_check_tool_and_run_tool_allow():
     assert tool.calls.last.request.content.find(b'"status":"SUCCESS"') >= 0
 
 
-@pytest.mark.parametrize(
-    ("decision", "error", "status"),
-    [
-        ("BLOCK", PolicyBlockedError, "BLOCKED"),
-        ("REQUIRE_APPROVAL", ApprovalRequiredError, "PENDING_APPROVAL"),
-    ],
-)
 @respx.mock
-def test_run_tool_enforces_negative_decisions(decision, error, status):
+def test_run_tool_enforces_block_decision():
     respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
     respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
-        return_value=policy_response(decision, "DENIED")
+        return_value=policy_response("BLOCK", "DENIED")
     )
     respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
     tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
     respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
     respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
     called = False
-    with pytest.raises(error):
+    with pytest.raises(PolicyBlockedError):
         with make_client().trace("policy") as trace:
             with trace.span("tool") as span:
                 def forbidden():
@@ -99,7 +98,154 @@ def test_run_tool_enforces_negative_decisions(decision, error, status):
                     called = True
                 span.run_tool("shell", forbidden)
     assert called is False
-    assert f'"status":"{status}"'.encode() in tool.calls.last.request.content
+    assert b'"status":"BLOCKED"' in tool.calls.last.request.content
+
+
+@respx.mock
+def test_nonblocking_approval_returns_identity_without_tool_call():
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        return_value=policy_response("REQUIRE_APPROVAL", "TOOL_REQUIRES_APPROVAL")
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    with pytest.raises(ApprovalRequiredError) as caught:
+        with make_client().trace("approval") as trace:
+            with trace.span("tool") as span:
+                span.run_tool("send_email", lambda: None)
+    assert caught.value.approval_id == 123
+    assert caught.value.external_request_id == "attempt-123"
+    assert tool.call_count == 0
+
+
+@respx.mock
+def test_waiting_approval_revalidates_and_executes_once():
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    preflight = respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        side_effect=[
+            policy_response("REQUIRE_APPROVAL", "TOOL_REQUIRES_APPROVAL"),
+            ok_response({
+                "decision": "ALLOW", "reason_code": "APPROVAL_GRANTED",
+                "reason": "granted", "policy_id": 7, "limits": {},
+                "approval_id": 123, "external_request_id": "attempt-123",
+                "approval_status": "approved",
+            }),
+        ]
+    )
+    respx.get("http://fake.agentops.local/ingest/policy/approvals/123").mock(
+        return_value=ok_response({"approval_id": 123, "status": "approved"})
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    call_count = 0
+    def execute():
+        nonlocal call_count
+        call_count += 1
+        return "sent"
+    with patch("agentops_monitor._span.uuid4", return_value="attempt-123"):
+        with make_client().trace("approval") as trace:
+            with trace.span("tool") as span:
+                assert span.run_tool(
+                    "send_email", execute, wait_for_approval=True,
+                    approval_timeout=1, approval_poll_interval=0.01,
+                ) == "sent"
+    assert call_count == 1
+    assert preflight.call_count == 2
+    assert all(
+        b'"external_request_id":"attempt-123"' in call.request.content
+        for call in preflight.calls
+    )
+    assert b'"approval_id":123' in tool.calls.last.request.content
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [("rejected", ApprovalRejectedError), ("pending", ApprovalTimeoutError)],
+)
+@respx.mock
+def test_rejected_and_timed_out_approvals_never_execute(status, error):
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        return_value=policy_response("REQUIRE_APPROVAL", "TOOL_REQUIRES_APPROVAL")
+    )
+    respx.get("http://fake.agentops.local/ingest/policy/approvals/123").mock(
+        return_value=ok_response({"approval_id": 123, "status": status})
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    called = False
+    with pytest.raises(error):
+        with make_client().trace("approval") as trace:
+            with trace.span("tool") as span:
+                def execute():
+                    nonlocal called
+                    called = True
+                span.run_tool(
+                    "send_email", execute, wait_for_approval=True,
+                    approval_timeout=0 if status == "pending" else 1,
+                    approval_poll_interval=0.01,
+                )
+    assert called is False
+
+
+def test_backend_unavailable_after_approval_requirement_never_fails_open():
+    called = False
+    with (
+        patch.object(Transport, "start_trace", return_value={"id": 1}),
+        patch.object(Transport, "finish_trace"),
+        patch.object(Transport, "create_span", return_value={"id": 2}),
+        patch.object(Transport, "check_tool", return_value={
+            "decision": "REQUIRE_APPROVAL", "reason_code": "TOOL_REQUIRES_APPROVAL",
+            "reason": "approval", "policy_id": 7, "limits": {}, "approval_id": 123,
+            "external_request_id": "attempt-123", "approval_status": "pending",
+        }),
+        patch.object(Transport, "get_approval", return_value=None),
+    ):
+        with pytest.raises(PolicyUnavailableError):
+            with make_client(policy_fail_mode="open").trace("approval") as trace:
+                with trace.span("tool") as span:
+                    def execute():
+                        nonlocal called
+                        called = True
+                    span.run_tool(
+                        "send_email", execute, wait_for_approval=True,
+                        approval_timeout=1, approval_poll_interval=0.01,
+                    )
+    assert called is False
+
+
+@respx.mock
+def test_policy_block_after_human_approval_prevents_execution():
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        side_effect=[
+            policy_response("REQUIRE_APPROVAL", "TOOL_REQUIRES_APPROVAL"),
+            policy_response("BLOCK", "TRACE_COST_LIMIT_EXCEEDED"),
+        ]
+    )
+    respx.get("http://fake.agentops.local/ingest/policy/approvals/123").mock(
+        return_value=ok_response({"approval_id": 123, "status": "approved"})
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    called = False
+    with pytest.raises(PolicyBlockedError) as caught:
+        with make_client().trace("approval") as trace:
+            with trace.span("tool") as span:
+                def execute():
+                    nonlocal called
+                    called = True
+                span.run_tool(
+                    "send_email", execute, wait_for_approval=True,
+                    approval_timeout=1, approval_poll_interval=0.01,
+                )
+    assert called is False
+    assert caught.value.reason_code == "TRACE_COST_LIMIT_EXCEEDED"
 
 
 @respx.mock

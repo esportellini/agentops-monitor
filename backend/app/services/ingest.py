@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ingest_auth import IngestContext
@@ -36,7 +36,7 @@ from app.models.trace import (
     TraceEvent,
 )
 from app.models.project import Agent, Environment, Project
-from app.models.security import AgentPolicy
+from app.models.security import AgentPolicy, ToolApproval
 from app.repositories import trace as trace_repo
 from app.schemas.ingest import (
     ModelCallCreate,
@@ -54,9 +54,11 @@ from app.services.policy import (
     apply_security_actions,
     evaluate_domain,
     evaluate_tool,
+    evaluate_tool_preflight,
     evaluate_trace_limits,
     resolve_agent_policy,
 )
+from app.services import audit as audit_svc
 from app.services.pricing import PRICED, UNPRICED, resolve_model_call_pricing
 from app.services.security import (
     FINDING_COST_LIMIT,
@@ -411,6 +413,54 @@ async def create_tool_call(
 
     trace = await _trace_for_span(db, span)
     policy = await resolve_agent_policy(db, trace.organization_id, trace.agent_id)
+
+    approval: ToolApproval | None = None
+    if body.approval_id is not None:
+        if body.status not in {ToolCallStatus.SUCCESS, ToolCallStatus.ERROR}:
+            raise IngestError("Approval provenance requires an executed tool status")
+        existing_call = await db.scalar(
+            select(ToolCall)
+            .join(Span, Span.id == ToolCall.span_id)
+            .join(Trace, Trace.id == Span.trace_id)
+            .where(
+                ToolCall.approval_id == body.approval_id,
+                Trace.organization_id == trace.organization_id,
+            )
+        )
+        if existing_call is not None:
+            if existing_call.span_id == span.id and existing_call.tool_name.strip().lower() == body.tool_name.strip().lower():
+                return existing_call
+            raise IngestError("Approval is not valid for this tool call", status_code=403)
+
+        approval = await db.scalar(select(ToolApproval).where(
+            ToolApproval.id == body.approval_id,
+            ToolApproval.organization_id == trace.organization_id,
+            ToolApproval.trace_id == trace.id,
+            ToolApproval.agent_id == trace.agent_id,
+        ))
+        if approval is None or approval.tool_name.strip().lower() != body.tool_name.strip().lower():
+            raise IngestError("Approval is not valid for this tool call", status_code=403)
+        if approval.span_id is not None and approval.span_id != span.id:
+            raise IngestError("Approval is not valid for this tool call", status_code=403)
+        if approval.status != "approved" or approval.used_at is not None:
+            raise IngestError("Approval is not available for execution", status_code=409)
+        current = await evaluate_tool_preflight(db, trace, body.tool_name, approval.target_url)
+        if current.decision == PolicyDecision.BLOCK:
+            raise IngestError(current.reason_code, status_code=403)
+        consumed_at = _utcnow()
+        consumed = await db.execute(
+            update(ToolApproval)
+            .where(
+                ToolApproval.id == approval.id,
+                ToolApproval.status == "approved",
+                ToolApproval.used_at.is_(None),
+            )
+            .values(used_at=consumed_at, updated_at=consumed_at)
+        )
+        if consumed.rowcount != 1:
+            raise IngestError("Approval is not available for execution", status_code=409)
+        approval.used_at = consumed_at
+
     input_scan = _secure_scan(body.input_data, "tool_call.input_data", policy)
     output_scan = _secure_scan(body.output_data, "tool_call.output_data", policy)
 
@@ -423,10 +473,27 @@ async def create_tool_call(
         duration_ms=body.duration_ms,
         requires_approval=body.requires_approval,
         blocked_reason=body.blocked_reason,
+        approval_id=approval.id if approval else None,
+        approved_by_id=approval.reviewed_by_id if approval else None,
     )
     db.add(tc)
     await db.flush()
     await _persist_scans(db, trace, [input_scan, output_scan], span=span, policy=policy)
+
+    if approval is not None:
+        await audit_svc.write(
+            db,
+            organization_id=trace.organization_id,
+            event_type="tool_approval.executed",
+            entity_type="tool_approval",
+            entity_id=str(approval.id),
+            message="Approved tool execution recorded",
+            after_data={
+                "approval_id": approval.id, "tool": tc.tool_name,
+                "trace_id": trace.id, "agent_id": trace.agent_id,
+                "tool_call_id": tc.id, "outcome": body.status.value,
+            },
+        )
 
     decision, reason_code, reason = evaluate_tool(policy, body.tool_name)
     executed = body.status in {ToolCallStatus.SUCCESS, ToolCallStatus.ERROR}

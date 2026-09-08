@@ -333,6 +333,10 @@ class _NoopSpan:
     def check_tool(self, *a: Any, **k: Any):
         from agentops_monitor.policy import PolicyDecision, ToolPolicyDecision
         return ToolPolicyDecision(PolicyDecision.ALLOW, "NOOP", "Instrumentation is disabled")
-    def run_tool(self, _tool_name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
-        kwargs.pop("target_url", None)
+    def run_tool(
+        self, _tool_name: str, fn: Any, *args: Any,
+        target_url: str | None = None, approval_context: dict | None = None,
+        wait_for_approval: bool = False, approval_timeout: float = 120.0,
+        approval_poll_interval: float = 1.0, **kwargs: Any,
+    ) -> Any:
         return fn(*args, **kwargs)

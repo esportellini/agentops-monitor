@@ -84,6 +84,26 @@ rede produzem `UNAVAILABLE`: `policy_fail_mode="open"` executa a função e regi
 o fallback, enquanto `"closed"` lança `PolicyUnavailableError`. O preflight envia
 somente trace, nome da ferramenta e URL opcional, nunca os argumentos da função.
 
+Por padrão, approvals são não bloqueantes. `ApprovalRequiredError` expõe
+`approval_id`, `external_request_id`, `reason_code` e `status`.
+
+```python
+result = span.run_tool(
+    "send_email",
+    send_email,
+    wait_for_approval=True,
+    approval_timeout=120,
+    approval_poll_interval=1,
+    approval_context={"recipient_group": "finance"},
+)
+```
+
+No modo de espera, o SDK consulta o status sem busy loop. Após `approved`, repete
+o preflight com o mesmo request ID e executa somente se a policy atual retornar
+`ALLOW`. Rejeição lança `ApprovalRejectedError`; timeout lança
+`ApprovalTimeoutError` e deixa o approval pendente. Indisponibilidade após uma
+decisão `REQUIRE_APPROVAL` lança `PolicyUnavailableError` mesmo em fail-open.
+
 O SDK envia automaticamente o instante UTC da model call. O backend combina
 `provider`, `model`, contagens de tokens e a tabela de preços versionada para
 calcular o custo. O argumento `estimated_cost` ainda é aceito para compatibilidade,

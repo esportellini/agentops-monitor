@@ -157,6 +157,24 @@ def _domain_matches(host: str, rule: str) -> bool:
     return bool(normalized) and (host == normalized or host.endswith(f".{normalized}"))
 
 
+def sanitize_target_url(value: str | None) -> str | None:
+    """Return reviewer-safe URL without userinfo, query parameters, or fragment."""
+    if value is None:
+        return None
+    raw = value.strip()
+    host = _domain(raw)
+    if host is None:
+        return None
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    scheme = parsed.scheme.lower() if parsed.scheme.lower() in {"http", "https"} else "https"
+    try:
+        port = f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        return None
+    path = parsed.path or ""
+    return f"{scheme}://{host}{port}{path}"
+
+
 def evaluate_tool(policy: AgentPolicy | None, tool_name: str) -> tuple[PolicyDecision, str, str]:
     if policy is None:
         return PolicyDecision.ALLOW, "NO_ACTIVE_POLICY", "No active policy applies"
