@@ -25,6 +25,8 @@ from app.schemas.ingest import (
     SpanOut,
     SpanUpdate,
     ToolCallCreate,
+    ToolPolicyCheck,
+    ToolPolicyCheckOut,
     TraceEventCreate,
     TraceFinish,
     TraceOut,
@@ -32,6 +34,8 @@ from app.schemas.ingest import (
 )
 from app.services import ingest as ingest_svc
 from app.services.ingest import IngestError
+from app.repositories import trace as trace_repo
+from app.services.policy import evaluate_tool_preflight
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 log = get_logger(__name__)
@@ -109,6 +113,32 @@ async def span_update(
 
 # ── Tool calls ────────────────────────────────────────────────────────────────
 
+@router.post("/policy/check-tool", response_model=ToolPolicyCheckOut)
+async def policy_check_tool(
+    body: ToolPolicyCheck,
+    ctx: IngestContext = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    trace = await trace_repo.get_trace_by_external_id(
+        db, body.external_trace_id, ctx.organization_id
+    )
+    if trace is None or (ctx.project_id is not None and trace.project_id != ctx.project_id):
+        raise HTTPException(status_code=404, detail="Trace not found")
+    result = await evaluate_tool_preflight(db, trace, body.tool_name, body.target_url)
+    return {
+        "decision": result.decision.value,
+        "reason_code": result.reason_code,
+        "reason": result.reason,
+        "policy_id": result.policy_id,
+        "limits": {
+            "token_state": result.limits.token_state.value,
+            "cost_state": result.limits.cost_state.value,
+            "total_tokens": result.limits.total_tokens,
+            "known_cost_usd": float(result.limits.known_cost_usd),
+            "unpriced_model_calls": result.limits.unpriced_model_calls,
+        },
+    }
+
 @router.post("/spans/{external_span_id}/tool-calls", status_code=status.HTTP_201_CREATED)
 async def tool_call_create(
     external_span_id: str,
@@ -144,6 +174,9 @@ async def model_call_create(
             "input_tokens": mc.input_tokens,
             "output_tokens": mc.output_tokens,
             "estimated_cost": float(mc.estimated_cost),
+            "occurred_at": mc.occurred_at,
+            "pricing_status": mc.pricing_status,
+            "pricing_id": mc.pricing_id,
             "status": mc.status,
         }
     except IngestError as e:
@@ -192,19 +225,27 @@ async def batch_ingest(
 
     for i, item in enumerate(body.items):
         try:
-            await _process_batch_item(db, ctx, item)
+            async with db.begin_nested():
+                await _process_batch_item(db, ctx, item)
+                # Surface database errors inside this item's savepoint.
+                await db.flush()
             results.append(BatchItemResult(index=i, ok=True))
             accepted += 1
         except Exception as e:
-            log.warning("ingest.batch.item_failed", index=i, type=item.type, error=str(e))
-            results.append(BatchItemResult(index=i, ok=False, error=str(e)))
+            log.warning(
+                "ingest.batch.item_failed",
+                index=i,
+                type=item.type,
+                error_type=type(e).__name__,
+            )
+            results.append(BatchItemResult(index=i, ok=False, error="Item processing failed"))
             failed += 1
 
     # Commit what succeeded (partial success)
     try:
         await db.commit()
     except Exception as e:
-        log.error("ingest.batch.commit_failed", error=str(e))
+        log.error("ingest.batch.commit_failed", error_type=type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to persist batch")
 
     return BatchResponse(accepted=accepted, failed=failed, results=results)

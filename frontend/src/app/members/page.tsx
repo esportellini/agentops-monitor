@@ -24,13 +24,13 @@ export default function MembersPage() {
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState("");
 
-  const { data, isLoading } = useQuery<{ items: Member[] }>({
+  const { data, isLoading } = useQuery<Member[]>({
     queryKey: ["members", activeOrg?.id],
     queryFn: () => fetch.get(`/api/v1/organizations/${activeOrg!.id}/members`),
     enabled: !!activeOrg,
   });
 
-  const members = data?.items ?? [];
+  const members = data ?? [];
 
   async function handleInvite() {
     if (!activeOrg || !email) return;

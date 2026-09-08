@@ -172,3 +172,11 @@ class Transport:
 
     def add_event(self, external_trace_id: str, payload: dict[str, Any]) -> None:
         self.post(f"/ingest/traces/{external_trace_id}/events", payload)
+
+    def check_tool(
+        self, external_trace_id: str, tool_name: str, target_url: str | None = None
+    ) -> dict[str, Any] | None:
+        payload = {"external_trace_id": external_trace_id, "tool_name": tool_name}
+        if target_url is not None:
+            payload["target_url"] = target_url
+        return self.post("/ingest/policy/check-tool", payload)

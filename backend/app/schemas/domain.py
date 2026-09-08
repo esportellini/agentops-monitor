@@ -173,6 +173,7 @@ class TraceOut(OrmBase):
     total_input_tokens: int
     total_output_tokens: int
     total_cost: float
+    unpriced_model_calls: int
     risk_level: Severity
     created_at: datetime
 
@@ -220,6 +221,9 @@ class ModelCallOut(OrmBase):
     input_tokens: int
     output_tokens: int
     estimated_cost: float
+    occurred_at: datetime
+    pricing_status: str
+    pricing_id: int | None
     latency_ms: int | None
     temperature: float | None
     status: ModelCallStatus

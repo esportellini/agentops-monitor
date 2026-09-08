@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:8000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   constructor(
@@ -39,7 +39,12 @@ export const api = {
       body: body !== undefined ? JSON.stringify(body) : undefined,
       headers,
     }),
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PATCH", body: body !== undefined ? JSON.stringify(body) : undefined }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, {
+      method: "PATCH",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers,
+    }),
+  delete: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(path, { method: "DELETE", headers }),
 };

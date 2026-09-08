@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +25,10 @@ import pytest
 import respx
 import httpx
 
-from agentops_monitor import AgentOps, Trace, Span
+from agentops_monitor import (
+    AgentOps, Trace, Span, ApprovalRequiredError, PolicyBlockedError,
+    PolicyDecision, PolicyUnavailableError,
+)
 from agentops_monitor._transport import Transport
 from agentops_monitor._utils import safe_json, mask_key
 
@@ -42,6 +46,79 @@ def make_client(**kwargs) -> AgentOps:
 def ok_response(data: dict | None = None) -> httpx.Response:
     import json
     return httpx.Response(200, content=json.dumps(data or {"id": 1}).encode())
+
+
+def policy_response(decision: str, code: str) -> httpx.Response:
+    return ok_response({
+        "decision": decision, "reason_code": code, "reason": code,
+        "policy_id": 7, "limits": {},
+    })
+
+
+@respx.mock
+def test_check_tool_and_run_tool_allow():
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    check = respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        return_value=policy_response("ALLOW", "POLICY_ALLOWED")
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    with make_client().trace("policy") as trace:
+        with trace.span("tool") as span:
+            decision = span.check_tool("search", target_url="https://example.com")
+            assert decision.decision == PolicyDecision.ALLOW
+            assert span.run_tool("search", lambda value: value + 1, 2) == 3
+    assert check.call_count == 2
+    assert tool.calls.last.request.content.find(b'"status":"SUCCESS"') >= 0
+
+
+@pytest.mark.parametrize(
+    ("decision", "error", "status"),
+    [
+        ("BLOCK", PolicyBlockedError, "BLOCKED"),
+        ("REQUIRE_APPROVAL", ApprovalRequiredError, "PENDING_APPROVAL"),
+    ],
+)
+@respx.mock
+def test_run_tool_enforces_negative_decisions(decision, error, status):
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        return_value=policy_response(decision, "DENIED")
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    called = False
+    with pytest.raises(error):
+        with make_client().trace("policy") as trace:
+            with trace.span("tool") as span:
+                def forbidden():
+                    nonlocal called
+                    called = True
+                span.run_tool("shell", forbidden)
+    assert called is False
+    assert f'"status":"{status}"'.encode() in tool.calls.last.request.content
+
+
+@respx.mock
+def test_policy_unavailable_fail_modes_are_explicit():
+    respx.post(url__regex=r".*/traces/start").mock(return_value=ok_response())
+    respx.post("http://fake.agentops.local/ingest/policy/check-tool").mock(
+        return_value=httpx.Response(503)
+    )
+    respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
+    respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
+    with make_client(policy_fail_mode="open").trace("open") as trace:
+        with trace.span("tool") as span:
+            assert span.run_tool("search", lambda: 42) == 42
+    with pytest.raises(PolicyUnavailableError):
+        with make_client(policy_fail_mode="closed").trace("closed") as trace:
+            with trace.span("tool") as span:
+                span.run_tool("search", lambda: 42)
 
 
 # ── Utility tests ─────────────────────────────────────────────────────────────
@@ -97,6 +174,49 @@ def test_span_happy_path():
             assert isinstance(span, Span)
             span.set_input({"q": "hello"})
             span.set_output({"answer": "world"})
+
+
+def test_span_is_created_before_its_child_calls():
+    """Child records must never reference a span that is not persisted yet."""
+    client = make_client()
+    order: list[str] = []
+
+    with (
+        patch.object(Transport, "start_trace", return_value={"id": 1}),
+        patch.object(Transport, "finish_trace"),
+        patch.object(Transport, "create_span", side_effect=lambda *_: order.append("span")),
+        patch.object(Transport, "add_tool_call", side_effect=lambda *_: order.append("tool")),
+        patch.object(Transport, "add_model_call", side_effect=lambda *_: order.append("model")),
+    ):
+        with client.trace("ordered-trace") as trace:
+            with trace.span("ordered-span") as span:
+                span.add_tool_call("search")
+                span.add_model_call("openai", "gpt-test")
+
+    assert order == ["span", "tool", "model"]
+
+
+def test_model_call_automatically_includes_utc_occurred_at():
+    client = make_client()
+    captured: dict[str, Any] = {}
+
+    with (
+        patch.object(Transport, "start_trace", return_value={"id": 1}),
+        patch.object(Transport, "finish_trace"),
+        patch.object(Transport, "create_span"),
+        patch.object(
+            Transport,
+            "add_model_call",
+            side_effect=lambda _span_id, payload: captured.update(payload),
+        ),
+    ):
+        with client.trace("timestamped-trace") as trace:
+            with trace.span("timestamped-span") as span:
+                span.add_model_call("openai", "gpt-4o", input_tokens=5)
+
+    occurred_at = datetime.fromisoformat(captured["occurred_at"])
+    assert occurred_at.tzinfo is not None
+    assert occurred_at.utcoffset() == timezone.utc.utcoffset(occurred_at)
 
 
 @respx.mock
@@ -364,6 +484,27 @@ def test_capture_inputs_false_omits_data():
     assert captured
     assert "input_data" not in captured[0]
     assert "output_data" not in captured[0]
+
+
+@respx.mock
+def test_capture_inputs_and_outputs_are_independent():
+    respx.post(url__regex=r".*").mock(return_value=ok_response())
+    captured: list[dict] = []
+    original = Transport.create_span
+
+    def spy(self, trace_id, payload):
+        captured.append(payload)
+        return original(self, trace_id, payload)
+
+    client = make_client(capture_inputs=False, capture_outputs=True)
+    with patch.object(Transport, "create_span", spy):
+        with client.trace("output-only") as trace:
+            with trace.span("work") as span:
+                span.set_input({"sensitive": "data"})
+                span.set_output({"result": "value"})
+
+    assert "input_data" not in captured[0]
+    assert captured[0]["output_data"] == {"result": "value"}
 
 
 # ── Nested spans ──────────────────────────────────────────────────────────────

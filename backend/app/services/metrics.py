@@ -7,15 +7,15 @@ Every query is scoped to organization_id to prevent cross-tenant data leakage.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, cast, Date, func, literal, select, text
+from sqlalchemy import case, cast, Date, func, literal, Numeric, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.trace import CostRecord, ModelCall, Span, Trace, TraceEvent
 from app.models.project import Agent, Project, Environment
 from app.models.enums import TraceStatus
+from app.services.pricing import PRICED, UNPRICED
 
 
 def _now() -> datetime:
@@ -53,7 +53,7 @@ async def get_overview(
             func.avg(Trace.duration_ms).label("avg_latency_ms"),
             func.sum(Trace.total_input_tokens).label("total_input_tokens"),
             func.sum(Trace.total_output_tokens).label("total_output_tokens"),
-            func.coalesce(func.sum(cast(Trace.total_cost, type_=type(Decimal()))), 0).label("total_cost"),
+            func.coalesce(func.sum(cast(Trace.total_cost, Numeric(14, 8))), 0).label("total_cost"),
         )
         .where(
             Trace.organization_id == organization_id,
@@ -69,6 +69,7 @@ async def get_overview(
     ).where(
         CostRecord.organization_id == organization_id,
         CostRecord.recorded_at >= today_start,
+        CostRecord.pricing_status == PRICED,
     )
     today_cost = (await db.execute(today_cost_q)).scalar_one()
 
@@ -79,6 +80,7 @@ async def get_overview(
     ).where(
         CostRecord.organization_id == organization_id,
         CostRecord.recorded_at >= month_start,
+        CostRecord.pricing_status == PRICED,
     )
     mtd_cost = (await db.execute(mtd_cost_q)).scalar_one()
 
@@ -89,6 +91,14 @@ async def get_overview(
         Trace.started_at >= since,
     )
     active_agents = (await db.execute(active_agents_q)).scalar_one()
+
+    unpriced_q = select(func.count()).where(
+        CostRecord.organization_id == organization_id,
+        CostRecord.recorded_at >= since,
+        CostRecord.recorded_at < until,
+        CostRecord.pricing_status == UNPRICED,
+    )
+    unpriced_model_calls = int((await db.execute(unpriced_q)).scalar_one())
 
     # Today executions
     today_q = select(func.count()).where(
@@ -119,6 +129,7 @@ async def get_overview(
         "cost_mtd_usd": float(mtd_cost),
         "cost_projection_usd": round(monthly_projection, 4),
         "active_agents": int(active_agents or 0),
+        "unpriced_model_calls": unpriced_model_calls,
     }
 
 
@@ -166,6 +177,7 @@ async def get_timeseries(
         .where(
             CostRecord.organization_id == organization_id,
             CostRecord.recorded_at >= since,
+            CostRecord.pricing_status == PRICED,
         )
         .group_by(cost_bucket)
         .order_by(cost_bucket)
@@ -209,6 +221,7 @@ async def get_agent_metrics(
             func.avg(Trace.duration_ms).label("avg_latency_ms"),
             func.sum(Trace.total_cost).label("total_cost"),
             func.avg(Trace.total_cost).label("avg_cost_per_execution"),
+            func.sum(Trace.unpriced_model_calls).label("unpriced_model_calls"),
         )
         .join(Agent, Agent.id == Trace.agent_id, isouter=True)
         .where(
@@ -232,6 +245,7 @@ async def get_agent_metrics(
             "avg_latency_ms": round(float(r.avg_latency_ms or 0)),
             "total_cost_usd": float(r.total_cost or 0),
             "avg_cost_per_execution_usd": float(r.avg_cost_per_execution or 0),
+            "unpriced_model_calls": int(r.unpriced_model_calls or 0),
         }
         for r in rows
     ]
@@ -255,9 +269,22 @@ async def get_model_metrics(
             func.count().label("calls"),
             func.sum(ModelCall.input_tokens).label("input_tokens"),
             func.sum(ModelCall.output_tokens).label("output_tokens"),
-            func.sum(ModelCall.estimated_cost).label("total_cost"),
+            func.sum(
+                case(
+                    (ModelCall.pricing_status == PRICED, ModelCall.estimated_cost),
+                    else_=0,
+                )
+            ).label("total_cost"),
             func.avg(ModelCall.latency_ms).label("avg_latency_ms"),
-            func.avg(ModelCall.estimated_cost).label("avg_cost"),
+            func.avg(
+                case(
+                    (ModelCall.pricing_status == PRICED, ModelCall.estimated_cost),
+                    else_=None,
+                )
+            ).label("avg_cost"),
+            func.sum(
+                case((ModelCall.pricing_status == UNPRICED, 1), else_=0)
+            ).label("unpriced_calls"),
         )
         .join(Span, Span.id == ModelCall.span_id)
         .join(Trace, Trace.id == Span.trace_id)
@@ -281,6 +308,7 @@ async def get_model_metrics(
             "total_cost_usd": float(r.total_cost or 0),
             "avg_cost_per_call_usd": float(r.avg_cost or 0),
             "avg_latency_ms": round(float(r.avg_latency_ms or 0)) if r.avg_latency_ms else None,
+            "unpriced_calls": int(r.unpriced_calls or 0),
         }
         for r in rows
     ]
@@ -304,6 +332,7 @@ async def get_project_metrics(
             func.sum(case((Trace.status == TraceStatus.SUCCESS, 1), else_=0)).label("success"),
             func.sum(Trace.total_cost).label("total_cost"),
             func.avg(Trace.total_cost).label("avg_cost"),
+            func.sum(Trace.unpriced_model_calls).label("unpriced_model_calls"),
         )
         .join(Project, Project.id == Trace.project_id, isouter=True)
         .where(
@@ -324,6 +353,7 @@ async def get_project_metrics(
             "success_rate": round(float(r.success or 0) / max(int(r.executions), 1) * 100, 1),
             "total_cost_usd": float(r.total_cost or 0),
             "avg_cost_usd": float(r.avg_cost or 0),
+            "unpriced_model_calls": int(r.unpriced_model_calls or 0),
         }
         for r in rows
     ]
@@ -369,10 +399,18 @@ async def get_cost_summary(
         cr_filters.append(CostRecord.provider == provider)
     if model:
         cr_filters.append(CostRecord.model == model)
+    if project_id or agent_id or environment_id:
+        cr_filters.append(CostRecord.trace_id.in_(select(Trace.id).where(*trace_filters)))
 
     # Total cost
-    total_cost_q = select(func.coalesce(func.sum(CostRecord.cost_usd), 0)).where(*cr_filters)
+    total_cost_q = select(func.coalesce(func.sum(CostRecord.cost_usd), 0)).where(
+        *cr_filters, CostRecord.pricing_status == PRICED
+    )
     total_cost = float((await db.execute(total_cost_q)).scalar_one())
+    unpriced_q = select(func.count()).where(
+        *cr_filters, CostRecord.pricing_status == UNPRICED
+    )
+    unpriced_model_calls = int((await db.execute(unpriced_q)).scalar_one())
 
     # Total executions
     exec_q = select(func.count()).where(*trace_filters)
@@ -386,7 +424,15 @@ async def get_cost_summary(
             func.count().label("calls"),
             func.sum(CostRecord.input_tokens).label("input_tokens"),
             func.sum(CostRecord.output_tokens).label("output_tokens"),
-            func.sum(CostRecord.cost_usd).label("cost"),
+            func.sum(
+                case(
+                    (CostRecord.pricing_status == PRICED, CostRecord.cost_usd),
+                    else_=0,
+                )
+            ).label("cost"),
+            func.sum(
+                case((CostRecord.pricing_status == UNPRICED, 1), else_=0)
+            ).label("unpriced_calls"),
         )
         .where(*cr_filters)
         .group_by(CostRecord.provider, CostRecord.model)
@@ -400,6 +446,7 @@ async def get_cost_summary(
             "input_tokens": int(r.input_tokens or 0),
             "output_tokens": int(r.output_tokens or 0),
             "cost_usd": float(r.cost or 0),
+            "unpriced_calls": int(r.unpriced_calls or 0),
         }
         for r in (await db.execute(by_model_q)).all()
     ]
@@ -416,6 +463,7 @@ async def get_cost_summary(
             Trace.total_cost,
             Trace.total_input_tokens,
             Trace.total_output_tokens,
+            Trace.unpriced_model_calls,
         )
         .where(*trace_filters)
         .order_by(Trace.total_cost.desc())
@@ -431,6 +479,7 @@ async def get_cost_summary(
             "duration_ms": r.duration_ms,
             "total_cost_usd": float(r.total_cost or 0),
             "total_tokens": int((r.total_input_tokens or 0) + (r.total_output_tokens or 0)),
+            "unpriced_model_calls": int(r.unpriced_model_calls or 0),
         }
         for r in (await db.execute(top_traces_q)).all()
     ]
@@ -447,6 +496,7 @@ async def get_cost_summary(
         "period": {"since": since.isoformat(), "until": until.isoformat()},
         "total_cost_usd": total_cost,
         "total_executions": total_executions,
+        "unpriced_model_calls": unpriced_model_calls,
         "avg_cost_per_execution_usd": avg_cost_per_execution,
         "monthly_projection_usd": round(projection, 4),
         "cost_by_model": by_model,
@@ -465,6 +515,7 @@ async def get_cost_projection(
     week_cost_q = select(func.coalesce(func.sum(CostRecord.cost_usd), 0)).where(
         CostRecord.organization_id == organization_id,
         CostRecord.recorded_at >= week_ago,
+        CostRecord.pricing_status == PRICED,
     )
     week_cost = float((await db.execute(week_cost_q)).scalar_one())
     daily_avg = week_cost / 7
@@ -474,6 +525,7 @@ async def get_cost_projection(
     mtd_q = select(func.coalesce(func.sum(CostRecord.cost_usd), 0)).where(
         CostRecord.organization_id == organization_id,
         CostRecord.recorded_at >= month_start,
+        CostRecord.pricing_status == PRICED,
     )
     mtd_cost = float((await db.execute(mtd_q)).scalar_one())
 

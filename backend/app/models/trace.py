@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -67,7 +68,8 @@ class Trace(Base, TimestampMixin):
 
     total_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_cost: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False, default=0)
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(14, 8), nullable=False, default=0)
+    unpriced_model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     risk_level: Mapped[Severity] = mapped_column(
         Enum(Severity, name="severity"), nullable=False, default=Severity.INFO
@@ -155,7 +157,13 @@ class ModelCall(Base, TimestampMixin):
     model: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    estimated_cost: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False, default=0)
+    # Legacy name: this value is the authoritative server-calculated cost.
+    estimated_cost: Mapped[Decimal] = mapped_column(Numeric(14, 8), nullable=False, default=0)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    pricing_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    pricing_id: Mapped[int | None] = mapped_column(
+        ForeignKey("model_pricing.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[ModelCallStatus] = mapped_column(
@@ -205,7 +213,20 @@ class CostRecord(Base, TimestampMixin):
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8), nullable=False)
+    pricing_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    pricing_id: Mapped[int | None] = mapped_column(
+        ForeignKey("model_pricing.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    input_price_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 8), nullable=True
+    )
+    output_price_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 8), nullable=True
+    )
+    pricing_effective_from: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     trace: Mapped[Trace] = relationship(back_populates="cost_records")

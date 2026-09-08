@@ -30,12 +30,16 @@ with client.trace(name="answer-question") as trace:
     with trace.span("llm-call", span_type="LLM") as span:
         answer = call_llm(docs)
         span.add_model_call("openai", "gpt-4o",
-            input_tokens=500, output_tokens=120, estimated_cost=0.0044)
+            input_tokens=500, output_tokens=120)
 
     trace.set_output({"decision": "pre_approval_required"})
 
 client.flush()
 ```
+
+The SDK adds `occurred_at` in UTC automatically. The backend calculates the
+authoritative cost from versioned pricing. `estimated_cost` remains accepted as
+legacy informational input, but it is ignored for persisted cost accounting.
 
 ## Configuration
 

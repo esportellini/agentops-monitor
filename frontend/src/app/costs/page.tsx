@@ -11,10 +11,11 @@ interface CostSummary {
   period: { since: string; until: string };
   total_cost_usd: number;
   total_executions: number;
+  unpriced_model_calls: number;
   avg_cost_per_execution_usd: number;
   monthly_projection_usd: number;
-  cost_by_model: { provider: string; model: string; calls: number; input_tokens: number; output_tokens: number; cost_usd: number }[];
-  top_expensive_traces: { id: number; external_trace_id: string; name: string; status: string; started_at: string; duration_ms: number | null; total_cost_usd: number; total_tokens: number }[];
+  cost_by_model: { provider: string; model: string; calls: number; input_tokens: number; output_tokens: number; cost_usd: number; unpriced_calls: number }[];
+  top_expensive_traces: { id: number; external_trace_id: string; name: string; status: string; started_at: string; duration_ms: number | null; total_cost_usd: number; total_tokens: number; unpriced_model_calls: number }[];
 }
 
 interface Projection {
@@ -90,6 +91,13 @@ export default function CostsPage() {
             <p className="mt-1 text-sm text-text-secondary">Track and analyze your AI spend</p>
           </div>
         </div>
+
+        {!!summary?.unpriced_model_calls && (
+          <div className="flex items-center gap-2 rounded-lg border border-status-warn/30 bg-status-warn/10 px-4 py-3 text-sm text-text-secondary">
+            <span className="rounded-full bg-status-warn/20 px-2 py-0.5 text-xs font-medium text-status-warn">Unpriced</span>
+            {summary.unpriced_model_calls.toLocaleString()} model {summary.unpriced_model_calls === 1 ? "call has" : "calls have"} no configured price. Totals include known costs only.
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3 items-center">
@@ -192,7 +200,20 @@ export default function CostsPage() {
                     <td className="py-2 text-text-muted tabular-nums">{r.calls.toLocaleString()}</td>
                     <td className="py-2 text-text-muted tabular-nums">{fmtTokens(r.input_tokens)}</td>
                     <td className="py-2 text-text-muted tabular-nums">{fmtTokens(r.output_tokens)}</td>
-                    <td className="py-2 font-medium text-text-primary tabular-nums">{fmtCost(r.cost_usd)}</td>
+                    <td className="py-2 font-medium text-text-primary tabular-nums">
+                      {r.unpriced_calls === r.calls ? (
+                        <span className="rounded-full bg-status-warn/15 px-2 py-0.5 text-xs text-status-warn">Unpriced</span>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span>{fmtCost(r.cost_usd)}</span>
+                          {r.unpriced_calls > 0 && (
+                            <span className="rounded-full bg-status-warn/15 px-2 py-0.5 text-xs text-status-warn">
+                              {r.unpriced_calls} unpriced
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -233,7 +254,16 @@ export default function CostsPage() {
                     </td>
                     <td className="py-2 text-xs text-text-muted tabular-nums">{fmtMs(t.duration_ms)}</td>
                     <td className="py-2 text-xs text-text-muted tabular-nums">{fmtTokens(t.total_tokens)}</td>
-                    <td className="py-2 text-xs font-semibold text-text-primary tabular-nums">{fmtCost(t.total_cost_usd)}</td>
+                    <td className="py-2 text-xs font-semibold text-text-primary tabular-nums">
+                      <div className="flex items-center gap-2">
+                        <span>{fmtCost(t.total_cost_usd)}</span>
+                        {t.unpriced_model_calls > 0 && (
+                          <span className="rounded-full bg-status-warn/15 px-2 py-0.5 text-[10px] text-status-warn">
+                            {t.unpriced_model_calls} unpriced
+                          </span>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

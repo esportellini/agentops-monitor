@@ -9,6 +9,13 @@ Public API:
 from agentops_monitor.client import AgentOps
 from agentops_monitor._trace import Trace
 from agentops_monitor._span import Span
+from agentops_monitor.policy import (
+    ApprovalRequiredError, PolicyBlockedError, PolicyDecision,
+    PolicyUnavailableError, ToolPolicyDecision,
+)
 
-__all__ = ["AgentOps", "Trace", "Span"]
+__all__ = [
+    "AgentOps", "Trace", "Span", "PolicyDecision", "ToolPolicyDecision",
+    "PolicyBlockedError", "ApprovalRequiredError", "PolicyUnavailableError",
+]
 __version__ = "0.1.0"

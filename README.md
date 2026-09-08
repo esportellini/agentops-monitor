@@ -25,17 +25,38 @@ AgentOps Monitor é uma plataforma B2B multi-tenant que coleta traces hierárqui
 - **Eventos** customizados com severidade no contexto de cada trace
 
 ### Custos
-- Precificação configurável por provider + modelo + janela de vigência
+- Precificação autoritativa no backend por provider + modelo + janela de vigência
+- Defaults globais com overrides isolados por organização
+- Snapshot histórico das tarifas usadas em cada model call
+- Modelos sem preço continuam observáveis e são marcados como `UNPRICED`
 - Custo por trace, agente, projeto, ambiente, modelo, período
 - Projeção mensal com base na média diária
 - Top traces mais caros
 
 ### Segurança
-- Scanner de dados sensíveis baseado em regras (regex + Luhn + checksum CPF)
-- Detecção de prompt injection (10 padrões)
-- Políticas por agente: ferramentas permitidas/bloqueadas, limites de custo/token, domínios
-- Aprovação humana de tool calls sensíveis
-- Alertas configuráveis com condições estruturadas
+- Scanner automático de dados sensíveis no ingest (regex + Luhn + checksum CPF)
+- Redação estrutural antes da persistência e criação automática de findings
+- Detecção de prompt injection e SQL perigoso com agregação de risco da trace
+- Políticas ativas por agente para ferramentas, domínios, captura, ações de segurança e limites por trace
+- Preflight autenticado para bloquear ou exigir aprovação antes da execução de uma ferramenta
+- Detecção post-hoc de violações sem reescrever o status informado pela aplicação
+
+### Semântica das políticas
+
+O endpoint `POST /ingest/policy/check-tool` recebe o ID externo da trace, o nome da
+ferramenta e, opcionalmente, a URL alvo. O agente e a organização vêm da trace e da
+chave de ingestão; o cliente não pode escolher outra política. A decisão segue a
+precedência: bloqueio explícito, allowlist, domínio, limites excedidos, aprovação e
+permissão. Os limites usam apenas model calls já persistidas. O limite é excedido
+quando o uso é maior que o valor configurado; igualdade ainda é permitida. Quando
+há model calls sem preço e o custo conhecido não excedeu o limite, o estado do
+orçamento é `UNKNOWN`.
+
+As ações `detect`, `redact`, `alert` e `block` são registradas no finding. Nesta
+fase, `alert` não cria incidentes e `REQUIRE_APPROVAL` não cria nem resolve uma
+solicitação de aprovação. `block` substitui o conteúdo correspondente antes da
+persistência. Mesmo com captura de entradas ou saídas desativada, o backend faz a
+varredura em memória e guarda somente os findings seguros.
 
 ### Avaliações
 - Datasets de casos de teste offline
@@ -145,12 +166,40 @@ with client.trace(name="responder-pergunta") as trace:
     with trace.span("chamar-llm", span_type="LLM") as span:
         resposta = chamar_llm(docs)
         span.add_model_call("openai", "gpt-4o",
-            input_tokens=500, output_tokens=120, estimated_cost=0.0044)
+            input_tokens=500, output_tokens=120)
 
     trace.set_output({"decisao": "pre_approval_required"})
 
 client.flush()
 ```
+
+Para impedir a execução antes de chamar uma ferramenta:
+
+```python
+from agentops_monitor import AgentOps, ApprovalRequiredError, PolicyBlockedError
+
+client = AgentOps(
+    api_key="agom_sua_chave",
+    endpoint="http://localhost:8000",
+    agent_id=42,
+    policy_fail_mode="closed",  # "open" executa se o serviço estiver indisponível
+)
+
+with client.trace("executar-busca") as trace:
+    with trace.span("buscar", span_type="TOOL") as span:
+        try:
+            resultado = span.run_tool(
+                "web_search", buscar, "agent policies",
+                target_url="https://search.example.com",
+            )
+        except (PolicyBlockedError, ApprovalRequiredError):
+            resultado = None
+```
+
+`span.check_tool()` retorna `ALLOW`, `BLOCK`, `REQUIRE_APPROVAL` ou o estado local
+`UNAVAILABLE`. `span.run_tool()` nunca confunde indisponibilidade com permissão: no
+modo `open` ele executa e registra `POLICY_UNAVAILABLE`; no modo `closed` ele lança
+`PolicyUnavailableError` sem executar a função.
 
 ### Demo agent
 
@@ -180,6 +229,7 @@ Migrations (ordem):
 5. `0005_model_pricing` — tabela de preços + seed
 6. `0006_security` — agent_policies, tool_approvals, security findings
 7. `0007_evaluations` — expand evaluation tables
+8. `0008_authoritative_pricing` — pricing por organização, status e provenance de custo
 
 ---
 
@@ -200,29 +250,43 @@ pytest tests/ -v
 ## Arquitetura de ingestão
 
 ```
-Agent → SDK → POST /ingest/traces/start       (create trace)
-            → POST /ingest/traces/{id}/spans  (add spans)
-            → POST /ingest/spans/{id}/model-calls
-            → POST /ingest/traces/{id}/finish (aggregate cost + status)
-                    │
-                    ├── Security scanner
-                    │     ├── PII detection (email, CPF, phone, card)
-                    │     ├── Secret detection (API keys, tokens)
-                    │     ├── Prompt injection (10 patterns)
-                    │     └── SQL injection
-                    │
-                    ├── Cost calculation
-                    │     └── model_pricing lookup by provider+model+date
-                    │
-                    └── Alert evaluation
-                          └── Structural conditions (no eval())
+Agent → SDK → /ingest
+                │
+                ├── validação de organização/projeto/agente/ambiente
+                ├── scan estrutural de payloads
+                ├── redação de PII, tokens e secrets antes do storage
+                ├── persistência do trace/span/tool/event sanitizado
+                ├── criação de SecurityFinding com evidência segura
+                └── agregação monotônica de Trace.risk_level
 ```
+
+### Fluxo de custos
+
+```text
+ModelCall (provider + model + tokens + occurred_at)
+  → resolução de pricing versionado (override da organização ou default global)
+  → cálculo Decimal no backend
+  → ModelCall.estimated_cost (nome legado, valor autoritativo)
+  → CostRecord com snapshot das tarifas e da vigência
+  → totais da trace e analytics por modelo, projeto e agente
+```
+
+O `estimated_cost` enviado por clientes antigos continua aceito, mas é ignorado
+no cálculo e na persistência do custo. Se não houver preço aplicável, a chamada
+e seus tokens são preservados com status `UNPRICED`; um preço configurado como
+zero produz status `PRICED` e custo zero. Assim, ausência de configuração não é
+apresentada como uso gratuito.
+
+As linhas incluídas pela migration de seed são entradas de demonstração/default.
+Elas não formam um catálogo atualizado automaticamente e não são garantia dos
+preços atuais dos providers. Pricing é versionado e configurável por vigência.
 
 ---
 
 ## Limitações
 
 - Providers reais (OpenAI, Anthropic) nas avaliações requerem integração adicional
+- Aprovações humanas e alertas não são criados automaticamente pelo enforcement de políticas
 - Notificações externas (Slack, email) estão preparadas na estrutura mas não implementadas
 - SSO (SAML/OIDC) não implementado nesta versão
 - Streaming de ingestão não suportado (batches recomendados para alto volume)

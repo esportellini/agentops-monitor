@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -23,16 +24,25 @@ class ModelPricing(Base, TimestampMixin):
 
     __tablename__ = "model_pricing"
     __table_args__ = (
-        Index("ix_model_pricing_lookup", "provider", "model", "effective_from"),
+        Index(
+            "ix_model_pricing_lookup",
+            "organization_id",
+            "provider",
+            "model",
+            "effective_from",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     provider: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     model: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
 
     # Price in USD per 1,000,000 tokens
-    input_price_per_million: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False)
-    output_price_per_million: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False)
+    input_price_per_million: Mapped[Decimal] = mapped_column(Numeric(14, 8), nullable=False)
+    output_price_per_million: Mapped[Decimal] = mapped_column(Numeric(14, 8), nullable=False)
 
     # Validity window
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

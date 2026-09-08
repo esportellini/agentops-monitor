@@ -59,6 +59,7 @@ from app.models.trace import (
     TraceEvent,
 )
 from app.services.api_key import generate_api_key
+from app.services.pricing import PRICED, calculate_cost, get_pricing
 
 setup_logging()
 log = get_logger(__name__)
@@ -466,13 +467,30 @@ async def seed(db: AsyncSession) -> None:
     await db.flush()
 
     # ── ModelCalls ────────────────────────────────────────────────────────────
+    gpt4o_pricing = await get_pricing(db, "openai", "gpt-4o", at=t1.ended_at)
+    gpt4o_mini_pricing = await get_pricing(db, "openai", "gpt-4o-mini", at=t6.ended_at)
+    if gpt4o_pricing is None or gpt4o_mini_pricing is None:
+        raise RuntimeError("Demo/default pricing migrations must run before seed")
+
+    mc1_cost = calculate_cost(gpt4o_pricing, 1240, 310)
+    mc2_cost = calculate_cost(gpt4o_pricing, 890, 0)
+    mc3_cost = calculate_cost(gpt4o_pricing, 1890, 520)
+    t6_cost = calculate_cost(gpt4o_mini_pricing, 12400, 3200)
+    t1.total_cost = mc1_cost
+    t2.total_cost = mc2_cost
+    t4.total_cost = mc3_cost
+    t6.total_cost = t6_cost
+
     mc1 = ModelCall(
         span_id=s1_llm.id,
         provider="openai",
         model="gpt-4o",
         input_tokens=1240,
         output_tokens=310,
-        estimated_cost=0.00432,
+        estimated_cost=mc1_cost,
+        occurred_at=t1.ended_at,
+        pricing_status=PRICED,
+        pricing_id=gpt4o_pricing.id,
         latency_ms=2100,
         temperature=0.2,
         status=ModelCallStatus.SUCCESS,
@@ -483,7 +501,10 @@ async def seed(db: AsyncSession) -> None:
         model="gpt-4o",
         input_tokens=890,
         output_tokens=0,
-        estimated_cost=0.0,
+        estimated_cost=mc2_cost,
+        occurred_at=t2.ended_at,
+        pricing_status=PRICED,
+        pricing_id=gpt4o_pricing.id,
         latency_ms=15000,
         temperature=0.2,
         status=ModelCallStatus.RATE_LIMITED,
@@ -494,7 +515,10 @@ async def seed(db: AsyncSession) -> None:
         model="gpt-4o",
         input_tokens=1890,
         output_tokens=520,
-        estimated_cost=0.00712,
+        estimated_cost=mc3_cost,
+        occurred_at=t4.ended_at,
+        pricing_status=PRICED,
+        pricing_id=gpt4o_pricing.id,
         latency_ms=1800,
         temperature=0.1,
         status=ModelCallStatus.SUCCESS,
@@ -506,19 +530,41 @@ async def seed(db: AsyncSession) -> None:
     db.add(CostRecord(
         organization_id=org.id, trace_id=t1.id, model_call_id=mc1.id,
         provider="openai", model="gpt-4o",
-        input_tokens=1240, output_tokens=310, cost_usd=0.00432,
+        input_tokens=1240, output_tokens=310, cost_usd=mc1_cost,
+        pricing_status=PRICED, pricing_id=gpt4o_pricing.id,
+        input_price_per_million=gpt4o_pricing.input_price_per_million,
+        output_price_per_million=gpt4o_pricing.output_price_per_million,
+        pricing_effective_from=gpt4o_pricing.effective_from,
         recorded_at=t1.ended_at,
+    ))
+    db.add(CostRecord(
+        organization_id=org.id, trace_id=t2.id, model_call_id=mc2.id,
+        provider="openai", model="gpt-4o",
+        input_tokens=890, output_tokens=0, cost_usd=mc2_cost,
+        pricing_status=PRICED, pricing_id=gpt4o_pricing.id,
+        input_price_per_million=gpt4o_pricing.input_price_per_million,
+        output_price_per_million=gpt4o_pricing.output_price_per_million,
+        pricing_effective_from=gpt4o_pricing.effective_from,
+        recorded_at=t2.ended_at,
     ))
     db.add(CostRecord(
         organization_id=org.id, trace_id=t4.id, model_call_id=mc3.id,
         provider="openai", model="gpt-4o",
-        input_tokens=1890, output_tokens=520, cost_usd=0.00712,
+        input_tokens=1890, output_tokens=520, cost_usd=mc3_cost,
+        pricing_status=PRICED, pricing_id=gpt4o_pricing.id,
+        input_price_per_million=gpt4o_pricing.input_price_per_million,
+        output_price_per_million=gpt4o_pricing.output_price_per_million,
+        pricing_effective_from=gpt4o_pricing.effective_from,
         recorded_at=t4.ended_at,
     ))
     db.add(CostRecord(
         organization_id=org.id, trace_id=t6.id, model_call_id=None,
         provider="openai", model="gpt-4o-mini",
-        input_tokens=12400, output_tokens=3200, cost_usd=0.04120,
+        input_tokens=12400, output_tokens=3200, cost_usd=t6_cost,
+        pricing_status=PRICED, pricing_id=gpt4o_mini_pricing.id,
+        input_price_per_million=gpt4o_mini_pricing.input_price_per_million,
+        output_price_per_million=gpt4o_mini_pricing.output_price_per_million,
+        pricing_effective_from=gpt4o_mini_pricing.effective_from,
         recorded_at=t6.ended_at,
     ))
 

@@ -168,7 +168,6 @@ def run_compliance_check(question: str, asset: str, user_ref: str) -> dict:
                 model=llm["model"],
                 input_tokens=llm["input_tokens"],
                 output_tokens=llm["output_tokens"],
-                estimated_cost=llm["input_tokens"] * 0.000005 + llm["output_tokens"] * 0.000015,
                 latency_ms=100,
             )
             span.set_output({"text_length": len(llm["text"])})

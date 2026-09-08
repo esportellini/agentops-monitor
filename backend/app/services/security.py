@@ -103,7 +103,8 @@ _RE_AWS_KEY = re.compile(r"\bAKIA[A-Z0-9]{16}\b")
 _RE_GH_TOKEN = re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b")
 
 _RE_PASSWORD_FIELD = re.compile(
-    r'(?i)(?:password|senha|passwd|pwd|secret|credentials?)\s*[:=]\s*["\']?(\S{4,})["\']?'
+    r'(?i)["\']?(?:password|senha|passwd|pwd|secret|credentials?)["\']?'
+    r'\s*[:=]\s*["\']?([^"\'\s,}]{4,})'
 )
 
 # Prompt injection patterns
@@ -138,6 +139,7 @@ class RuleMatch:
     title: str
     description: str
     matched_text: str
+    redaction_text: str | None = None
     redaction_placeholder: str | None = None
     field: str = ""
 
@@ -159,6 +161,16 @@ class ScanResult:
             if any(m.severity == s for m in self.matches):
                 return s
         return None
+
+
+@dataclass
+class StructuredScanResult:
+    sanitized: Any
+    matches: list[RuleMatch] = field(default_factory=list)
+
+    @property
+    def has_findings(self) -> bool:
+        return bool(self.matches)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -283,6 +295,7 @@ def _detect_secrets(text: str) -> list[RuleMatch]:
                 title=f"{label} detected",
                 description=f"Known API key format ({label}) found in content",
                 matched_text=m.group()[:12] + "…",
+                redaction_text=m.group(),
                 redaction_placeholder=_REDACT[FINDING_API_KEY],
             ))
 
@@ -293,6 +306,7 @@ def _detect_secrets(text: str) -> list[RuleMatch]:
             title="API key detected",
             description="Generic API key pattern found in content",
             matched_text=m.group()[:20] + "…",
+            redaction_text=m.group(),
             redaction_placeholder=_REDACT[FINDING_API_KEY],
         ))
 
@@ -303,6 +317,7 @@ def _detect_secrets(text: str) -> list[RuleMatch]:
             title="Bearer token detected",
             description="HTTP Bearer token found in content",
             matched_text="Bearer " + m.group(1)[:8] + "…",
+            redaction_text=m.group(),
             redaction_placeholder=_REDACT[FINDING_BEARER_TOKEN],
         ))
 
@@ -313,6 +328,7 @@ def _detect_secrets(text: str) -> list[RuleMatch]:
             title="Credential field detected",
             description="Password/secret field with value found in content",
             matched_text=m.group()[:20] + "…",
+            redaction_text=m.group(),
             redaction_placeholder=_REDACT[FINDING_CREDENTIAL],
         ))
 
@@ -353,9 +369,10 @@ def _apply_redactions(text: str, matches: list[RuleMatch]) -> str:
     """Replace all matched texts with their redaction placeholders."""
     result = text
     # Sort longest-first so inner matches don't interfere
-    for m in sorted(matches, key=lambda x: -len(x.matched_text)):
-        if m.redaction_placeholder and m.matched_text in result:
-            result = result.replace(m.matched_text, m.redaction_placeholder)
+    for m in sorted(matches, key=lambda x: -len(x.redaction_text or x.matched_text)):
+        source = m.redaction_text or m.matched_text
+        if m.redaction_placeholder and source in result:
+            result = result.replace(source, m.redaction_placeholder)
     return result
 
 
@@ -393,6 +410,53 @@ def scan_object(obj: Any, field_name: str = "") -> ScanResult:
     """Scan any object by extracting its string representation."""
     text = _extract_text(obj)
     return scan_text(text, field_name=field_name)
+
+
+_CREDENTIAL_FIELD_NAME = re.compile(
+    r"(?i)^(?:password|senha|passwd|pwd|secret|credentials?|token|api[_-]?key)$"
+)
+
+
+def scan_and_redact_object(obj: Any, field_name: str = "") -> StructuredScanResult:
+    """Recursively scan strings while preserving the input container structure."""
+    matches: list[RuleMatch] = []
+
+    def path_for_key(parent: str, key: Any) -> str:
+        return f"{parent}.{key}" if parent else str(key)
+
+    def visit(value: Any, path: str, key_name: str | None = None) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: visit(child, path_for_key(path, key), str(key))
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [visit(child, f"{path}[{index}]") for index, child in enumerate(value)]
+        if isinstance(value, tuple):
+            return tuple(visit(child, f"{path}[{index}]") for index, child in enumerate(value))
+        if not isinstance(value, str):
+            return value
+
+        result = scan_text(value, field_name=path)
+        matches.extend(result.matches)
+        sanitized = result.text_redacted
+
+        if key_name and _CREDENTIAL_FIELD_NAME.fullmatch(key_name):
+            credential_scan = scan_text(f"{key_name}: {value}", field_name=path)
+            credential_matches = [
+                match
+                for match in credential_scan.matches
+                if match.finding_type == FINDING_CREDENTIAL
+            ]
+            for match in credential_matches:
+                match.redaction_text = value
+            if credential_matches:
+                matches.extend(credential_matches)
+                sanitized = _REDACT[FINDING_CREDENTIAL]
+
+        return sanitized
+
+    return StructuredScanResult(sanitized=visit(obj, field_name), matches=matches)
 
 
 def get_severity(finding_type: str) -> str:

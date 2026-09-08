@@ -47,7 +47,8 @@ def mask_key(key: str) -> str:
     """Return a redacted version of an API key safe for logging."""
     if not key or len(key) < 12:
         return "***"
-    return f"{key[:8]}...{key[-4:]}"
+    prefix_length = 13 if key.startswith("agom_") else 8
+    return f"{key[:prefix_length]}...{key[-4:]}"
 
 
 def sdk_warn(msg: str, *args: Any) -> None:

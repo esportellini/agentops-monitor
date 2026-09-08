@@ -27,6 +27,7 @@ interface ModelCall {
   input_tokens: number;
   output_tokens: number;
   estimated_cost: number;
+  pricing_status: "PRICED" | "UNPRICED";
   latency_ms: number | null;
   status: string;
 }
@@ -60,6 +61,7 @@ interface CostRecord {
   provider: string;
   model: string;
   cost_usd: number;
+  pricing_status: "PRICED" | "UNPRICED";
 }
 interface TraceDetail {
   id: number;
@@ -73,6 +75,7 @@ interface TraceDetail {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost: number;
+  unpriced_model_calls: number;
   spans: SpanDetail[];
   events: TraceEvent[];
   cost_records: CostRecord[];
@@ -208,7 +211,11 @@ function SpanNode({
                   <span className="tabular-nums">
                     ↑{mc.input_tokens} ↓{mc.output_tokens}
                   </span>
-                  <span className="tabular-nums">{fmtCost(mc.estimated_cost)}</span>
+                  {mc.pricing_status === "UNPRICED" ? (
+                    <span className="rounded-full bg-status-warn/15 px-2 py-0.5 text-status-warn">Unpriced</span>
+                  ) : (
+                    <span className="tabular-nums">{fmtCost(mc.estimated_cost)}</span>
+                  )}
                 </div>
               ))}
             </div>
@@ -397,7 +404,9 @@ export default function TraceDetailPage() {
                       <td className="py-2 text-text-secondary">{cr.provider}</td>
                       <td className="py-2 text-text-secondary font-mono">{cr.model}</td>
                       <td className="py-2 text-text-primary tabular-nums">
-                        {fmtCost(cr.cost_usd)}
+                        {cr.pricing_status === "UNPRICED" ? (
+                          <span className="rounded-full bg-status-warn/15 px-2 py-0.5 text-status-warn">Unpriced</span>
+                        ) : fmtCost(cr.cost_usd)}
                       </td>
                     </tr>
                   ))}

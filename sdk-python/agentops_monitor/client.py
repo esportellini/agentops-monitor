@@ -62,6 +62,9 @@ class AgentOps:
     disabled:
         Set to True to completely disable all instrumentation (no-op mode).
         Useful in tests or local dev.
+    policy_fail_mode:
+        ``"open"`` executes tools when preflight is unavailable; ``"closed"``
+        raises ``PolicyUnavailableError`` before execution. Default: ``"open"``.
     """
 
     def __init__(
@@ -79,12 +82,17 @@ class AgentOps:
         timeout: float = 10.0,
         flush_threshold: int = 50,
         disabled: bool = False,
+        policy_fail_mode: str = "open",
     ) -> None:
         self._project_id = project_id
         self._agent_id = agent_id
         self._environment_id = environment_id
         self._sample_rate = max(0.0, min(1.0, sample_rate))
-        self._capture_io = capture_inputs and capture_outputs
+        if policy_fail_mode not in {"open", "closed"}:
+            raise ValueError("policy_fail_mode must be 'open' or 'closed'")
+        self._capture_inputs = capture_inputs
+        self._capture_outputs = capture_outputs
+        self._policy_fail_mode = policy_fail_mode
         self._redact = redact_fn
         self._disabled = disabled
 
@@ -150,7 +158,9 @@ class AgentOps:
             session_id=session_id,
             user_reference=user_reference,
             metadata=metadata,
-            capture_io=self._capture_io,
+            capture_inputs=self._capture_inputs,
+            capture_outputs=self._capture_outputs,
+            policy_fail_mode=self._policy_fail_mode,
             redact_fn=self._redact,
         )
         with t:
@@ -194,11 +204,11 @@ class AgentOps:
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 with self.trace(trace_name, **trace_kwargs) as t:
-                    if self._capture_io and args:
+                    if self._capture_inputs and args:
                         t.set_input({"args": args, "kwargs": kwargs})
                     try:
                         result = fn(*args, **kwargs)
-                        if self._capture_io:
+                        if self._capture_outputs:
                             t.set_output({"result": result})
                         return result
                     except Exception:
@@ -320,3 +330,9 @@ class _NoopSpan:
     def set_metadata(self, *a: Any, **k: Any) -> "_NoopSpan": return self
     def add_tool_call(self, *a: Any, **k: Any) -> "_NoopSpan": return self
     def add_model_call(self, *a: Any, **k: Any) -> "_NoopSpan": return self
+    def check_tool(self, *a: Any, **k: Any):
+        from agentops_monitor.policy import PolicyDecision, ToolPolicyDecision
+        return ToolPolicyDecision(PolicyDecision.ALLOW, "NOOP", "Instrumentation is disabled")
+    def run_tool(self, _tool_name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("target_url", None)
+        return fn(*args, **kwargs)

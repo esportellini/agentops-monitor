@@ -198,6 +198,7 @@ async def execute_run(db: AsyncSession, run: EvaluationRun) -> EvaluationRun:
     run.passed_cases = passed_count
 
     await db.flush()
+    await db.refresh(run, ["results"])
     return run
 
 
@@ -285,6 +286,9 @@ async def submit_human_review(
     note: str | None,
     reviewer_id: int | None,
 ) -> EvaluationResult | None:
+    if status not in ("approved", "rejected", "needs_review"):
+        raise ValueError(f"Invalid review status: {status}")
+
     r = await db.execute(
         select(EvaluationResult)
         .join(EvaluationRun, EvaluationRun.id == EvaluationResult.run_id)
@@ -293,9 +297,6 @@ async def submit_human_review(
     result = r.scalar_one_or_none()
     if result is None:
         return None
-
-    if status not in ("approved", "rejected", "needs_review"):
-        raise ValueError(f"Invalid review status: {status}")
 
     result.human_review_status = status
     result.human_review_note = note

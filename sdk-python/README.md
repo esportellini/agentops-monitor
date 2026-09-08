@@ -49,12 +49,45 @@ with client.trace(name="answer-compliance-question", user_reference="user_hash_a
     with trace.span("decisao-llm", span_type="LLM") as span:
         resposta = chamar_llm(docs)
         span.add_model_call("openai", "gpt-4o",
-            input_tokens=500, output_tokens=120, estimated_cost=0.0044)
+            input_tokens=500, output_tokens=120)
 
     trace.set_output({"decisao": "pre_approval_required"})
 
 client.flush()
 ```
+
+## Enforcement de ferramentas
+
+```python
+from agentops_monitor import AgentOps, PolicyBlockedError
+
+client = AgentOps(
+    api_key="agom_...",
+    endpoint="http://localhost:8000",
+    agent_id=1,
+    policy_fail_mode="closed",
+)
+
+with client.trace("pesquisa") as trace:
+    with trace.span("web", span_type="TOOL") as span:
+        decision = span.check_tool("web_search", target_url="https://docs.example.com")
+        print(decision.decision, decision.reason_code, decision.limits)
+        result = span.run_tool(
+            "web_search", search, "AgentOps",
+            target_url="https://docs.example.com",
+        )
+```
+
+`run_tool` executa somente decisões `ALLOW`. `BLOCK` lança
+`PolicyBlockedError`; `REQUIRE_APPROVAL` lança `ApprovalRequiredError`. Falhas de
+rede produzem `UNAVAILABLE`: `policy_fail_mode="open"` executa a função e registra
+o fallback, enquanto `"closed"` lança `PolicyUnavailableError`. O preflight envia
+somente trace, nome da ferramenta e URL opcional, nunca os argumentos da função.
+
+O SDK envia automaticamente o instante UTC da model call. O backend combina
+`provider`, `model`, contagens de tokens e a tabela de preços versionada para
+calcular o custo. O argumento `estimated_cost` ainda é aceito para compatibilidade,
+mas é apenas informativo e não controla o custo persistido.
 
 ## Tratamento de erros
 

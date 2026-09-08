@@ -5,13 +5,14 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useAuthFetch } from "@/hooks/useAuthFetch";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 import { cn } from "@/lib/utils";
+import { API_URL } from "@/lib/api";
 
 interface Log { id: number; event_type: string; severity: string; message: string; entity_type: string|null; entity_id: string|null; user_id: number|null; ip_address: string|null; before_data: Record<string,unknown> | null; after_data: Record<string,unknown> | null; created_at: string; }
 
 const SEV: Record<string,string> = { CRITICAL: "text-red-400", HIGH: "text-orange-400", MEDIUM: "text-yellow-400", LOW: "text-status-ok", INFO: "text-text-muted" };
 
 export default function AuditLogsPage() {
-  const { activeOrg } = useAuth();
+  const { activeOrg, accessToken } = useAuth();
   const fetch = useAuthFetch();
   const [eventType, setEventType] = useState("");
   const [severity, setSeverity] = useState("");
@@ -29,10 +30,20 @@ export default function AuditLogsPage() {
 
   const logs = data?.items ?? [];
 
-  function exportCsv() {
-    if (!activeOrg) return;
-    const url = `http://localhost:8000/api/v1/organizations/${activeOrg.id}/audit-logs/export.csv?${params}`;
-    window.open(url, "_blank");
+  async function exportCsv() {
+    if (!activeOrg || !accessToken) return;
+    const response = await window.fetch(
+      `${API_URL}/api/v1/organizations/${activeOrg.id}/audit-logs/export.csv?${params}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!response.ok) return;
+
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `audit-logs-${activeOrg.id}.csv`;
+    link.click();
+    URL.revokeObjectURL(objectUrl);
   }
 
   return (

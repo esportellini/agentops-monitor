@@ -39,7 +39,9 @@ class Trace:
         session_id: str | None,
         user_reference: str | None,
         metadata: dict | None,
-        capture_io: bool,
+        capture_inputs: bool,
+        capture_outputs: bool,
+        policy_fail_mode: str,
         redact_fn: Any,
     ) -> None:
         self._transport = transport
@@ -50,7 +52,9 @@ class Trace:
         self._session_id = session_id
         self._user_reference = user_reference
         self._meta = metadata or {}
-        self._capture_io = capture_io
+        self._capture_inputs = capture_inputs
+        self._capture_outputs = capture_outputs
+        self._policy_fail_mode = policy_fail_mode
         self._redact = redact_fn
 
         self.trace_id: str = new_id()
@@ -113,12 +117,12 @@ class Trace:
     # ── Data setters ──────────────────────────────────────────────────────────
 
     def set_input(self, data: Any) -> "Trace":
-        if self._capture_io:
+        if self._capture_inputs:
             self._input = self._apply_redact(safe_json(data))
         return self
 
     def set_output(self, data: Any) -> "Trace":
-        if self._capture_io:
+        if self._capture_outputs:
             self._output = self._apply_redact(safe_json(data))
         return self
 
@@ -150,7 +154,9 @@ class Trace:
             name=name,
             span_type=span_type,
             parent_span_id=parent_id,
-            capture_io=self._capture_io,
+            capture_inputs=self._capture_inputs,
+            capture_outputs=self._capture_outputs,
+            policy_fail_mode=self._policy_fail_mode,
             redact_fn=self._redact,
         )
         self._span_stack.append(s.span_id)

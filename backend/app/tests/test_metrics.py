@@ -21,9 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pricing import ModelPricing
 from app.services.pricing import (
+    PRICED,
+    UNPRICED,
     calculate_cost,
     calculate_model_call_cost,
     get_pricing,
+    normalize_provider_model,
+    resolve_model_call_pricing,
 )
 from app.services.metrics import (
     get_cost_summary,
@@ -53,8 +57,10 @@ async def _seed_pricing(
     out: float = 10.00,
     from_dt: datetime | None = None,
     to_dt: datetime | None = None,
+    organization_id: int | None = None,
 ) -> ModelPricing:
     p = ModelPricing(
+        organization_id=organization_id,
         provider=provider,
         model=model,
         input_price_per_million=inp,
@@ -93,11 +99,11 @@ async def test_combined_cost(db: AsyncSession):
     pricing = await _seed_pricing(db, inp=2.50, out=10.00)
 
     # 100 input tokens + 50 output tokens
-    # input:  100 * 2.50 / 1_000_000 = 0.00000025
-    # output: 50  * 10.00 / 1_000_000 = 0.0000005
-    # total = 0.00000075
+    # input:  100 * 2.50 / 1_000_000 = 0.00025
+    # output: 50  * 10.00 / 1_000_000 = 0.0005
+    # total = 0.00075
     cost = calculate_cost(pricing, input_tokens=100, output_tokens=50)
-    assert cost == Decimal("0.000000750")
+    assert cost == Decimal("0.000750")
 
 
 @pytest.mark.asyncio
@@ -105,6 +111,32 @@ async def test_zero_tokens_zero_cost(db: AsyncSession):
     pricing = await _seed_pricing(db)
     cost = calculate_cost(pricing, input_tokens=0, output_tokens=0)
     assert cost == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_decimal_precision_and_small_cost(db: AsyncSession):
+    pricing = await _seed_pricing(
+        db,
+        provider="precision-provider",
+        model="precision-model",
+        inp=Decimal("0.12345678"),
+        out=Decimal("0.87654321"),
+    )
+
+    assert calculate_cost(pricing, input_tokens=3, output_tokens=7) == Decimal("0.00000651")
+
+    tiny = await _seed_pricing(
+        db,
+        provider="tiny-provider",
+        model="tiny-model",
+        inp=Decimal("0.005"),
+        out=Decimal("0"),
+    )
+    assert calculate_cost(tiny, input_tokens=1, output_tokens=0) == Decimal("0.00000001")
+
+
+def test_provider_and_model_normalization():
+    assert normalize_provider_model(" OpenAI ", " gpt-4o ") == ("openai", "gpt-4o")
 
 
 # ── Pricing lookup by vigência ────────────────────────────────────────────────
@@ -142,6 +174,99 @@ async def test_pricing_lookup_at_specific_date(db: AsyncSession):
     new_result = await get_pricing(db, "openai", "gpt-4o", at=at_new)
     assert new_result is not None
     assert float(new_result.input_price_per_million) == 2.50
+
+
+@pytest.mark.asyncio
+async def test_pricing_boundary_selects_new_window(db: AsyncSession):
+    boundary = _utc(2026, 2, 1)
+    old = await _seed_pricing(
+        db,
+        provider="boundary-provider",
+        model="boundary-model",
+        inp=1,
+        out=1,
+        from_dt=_utc(2026, 1, 1),
+        to_dt=boundary,
+    )
+    new = await _seed_pricing(
+        db,
+        provider="boundary-provider",
+        model="boundary-model",
+        inp=2,
+        out=2,
+        from_dt=boundary,
+    )
+    await db.flush()
+
+    assert (await get_pricing(db, "boundary-provider", "boundary-model", at=boundary)).id == new.id
+    assert (await get_pricing(db, "boundary-provider", "boundary-model", at=boundary - timedelta(microseconds=1))).id == old.id
+
+
+@pytest.mark.asyncio
+async def test_org_override_precedes_global_without_leaking(db: AsyncSession):
+    _, org_a, _ = await make_user_with_org(db, email="price-a@x.com", org_slug="price-a")
+    _, org_b, _ = await make_user_with_org(db, email="price-b@x.com", org_slug="price-b")
+    global_price = await _seed_pricing(
+        db, provider="tenant-provider", model="tenant-model", inp=2, out=6
+    )
+    override = await _seed_pricing(
+        db,
+        provider="tenant-provider",
+        model="tenant-model",
+        inp=1,
+        out=3,
+        organization_id=org_a.id,
+    )
+    await db.flush()
+
+    assert (
+        await get_pricing(
+            db, "tenant-provider", "tenant-model", organization_id=org_a.id
+        )
+    ).id == override.id
+    assert (
+        await get_pricing(
+            db, "tenant-provider", "tenant-model", organization_id=org_b.id
+        )
+    ).id == global_price.id
+
+
+@pytest.mark.asyncio
+async def test_resolution_distinguishes_zero_price_from_unknown(db: AsyncSession):
+    _, org, _ = await make_user_with_org(db, email="zero-price@x.com", org_slug="zero-price")
+    zero_price = await _seed_pricing(
+        db,
+        provider="free-provider",
+        model="free-model",
+        inp=0,
+        out=0,
+        organization_id=org.id,
+    )
+    await db.flush()
+
+    priced = await resolve_model_call_pricing(
+        db,
+        organization_id=org.id,
+        provider=" FREE-PROVIDER ",
+        model=" free-model ",
+        input_tokens=10,
+        output_tokens=20,
+    )
+    unknown = await resolve_model_call_pricing(
+        db,
+        organization_id=org.id,
+        provider="unknown-provider",
+        model="unknown-model",
+        input_tokens=10,
+        output_tokens=20,
+    )
+
+    assert priced.status == PRICED
+    assert priced.cost_usd == Decimal("0.00000000")
+    assert priced.pricing.id == zero_price.id
+    assert unknown.status == UNPRICED
+    assert unknown.cost_usd is None
+    assert unknown.pricing is None
 
 
 @pytest.mark.asyncio
@@ -254,6 +379,7 @@ async def test_cost_summary_structure(db: AsyncSession):
     assert "cost_by_model" in result
     assert "top_expensive_traces" in result
     assert "monthly_projection_usd" in result
+    assert result["unpriced_model_calls"] == 0
     assert result["total_cost_usd"] >= 0
 
 

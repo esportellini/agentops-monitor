@@ -34,16 +34,16 @@ export function useAuthFetch() {
 
   const patch = useCallback(
     async <T>(path: string, body?: unknown): Promise<T> => {
-      return api.patch<T>(path, body);
+      return api.patch<T>(path, body, authHeaders());
     },
-    [],
+    [authHeaders],
   );
 
   const del = useCallback(
     async <T>(path: string): Promise<T> => {
-      return api.delete<T>(path);
+      return api.delete<T>(path, authHeaders());
     },
-    [],
+    [authHeaders],
   );
 
   return { get, post, patch, delete: del };

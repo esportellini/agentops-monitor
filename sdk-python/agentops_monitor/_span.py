@@ -10,9 +10,17 @@ Usage:
 from __future__ import annotations
 
 import traceback
+import time
 from typing import TYPE_CHECKING, Any
 
 from agentops_monitor._utils import new_id, safe_json, utcnow_iso
+from agentops_monitor.policy import (
+    ApprovalRequiredError,
+    PolicyBlockedError,
+    PolicyDecision,
+    PolicyUnavailableError,
+    ToolPolicyDecision,
+)
 
 if TYPE_CHECKING:
     from agentops_monitor._transport import Transport
@@ -33,7 +41,9 @@ class Span:
         span_type: str = "CUSTOM",
         parent_span_id: str | None = None,
         *,
-        capture_io: bool = True,
+        capture_inputs: bool = True,
+        capture_outputs: bool = True,
+        policy_fail_mode: str = "open",
         redact_fn: Any = None,
     ) -> None:
         self._transport = transport
@@ -41,7 +51,9 @@ class Span:
         self._name = name
         self._type = span_type.upper()
         self._parent_span_id = parent_span_id
-        self._capture_io = capture_io
+        self._capture_inputs = capture_inputs
+        self._capture_outputs = capture_outputs
+        self._policy_fail_mode = policy_fail_mode
         self._redact = redact_fn
 
         self.span_id: str = new_id()
@@ -50,6 +62,7 @@ class Span:
         self._output: dict | None = None
         self._error: dict | None = None
         self._metadata: dict = {}
+        self._pending_child_calls: list[tuple[str, dict[str, Any]]] = []
         self._finished = False
 
     # ── Context manager ───────────────────────────────────────────────────────
@@ -71,12 +84,12 @@ class Span:
     # ── Data setters ──────────────────────────────────────────────────────────
 
     def set_input(self, data: Any) -> "Span":
-        if self._capture_io:
+        if self._capture_inputs:
             self._input = self._apply_redact(safe_json(data))
         return self
 
     def set_output(self, data: Any) -> "Span":
-        if self._capture_io:
+        if self._capture_outputs:
             self._output = self._apply_redact(safe_json(data))
         return self
 
@@ -114,20 +127,73 @@ class Span:
             "status": status.upper(),
             "requires_approval": requires_approval,
         }
-        if input is not None and self._capture_io:
+        if input is not None and self._capture_inputs:
             payload["input_data"] = self._apply_redact(safe_json(input))
-        if output is not None and self._capture_io:
+        if output is not None and self._capture_outputs:
             payload["output_data"] = self._apply_redact(safe_json(output))
         if duration_ms is not None:
             payload["duration_ms"] = duration_ms
         if blocked_reason:
             payload["blocked_reason"] = blocked_reason
 
+        self._pending_child_calls.append(("tool", payload))
+        return self
+
+    def check_tool(self, tool_name: str, *, target_url: str | None = None) -> ToolPolicyDecision:
+        """Ask the backend for a decision without sending tool arguments."""
         try:
-            self._transport.add_tool_call(self.span_id, payload)
+            payload = self._transport.check_tool(self._trace_id, tool_name, target_url)
+            if payload is not None:
+                return ToolPolicyDecision(
+                    decision=PolicyDecision(payload["decision"]),
+                    reason_code=str(payload["reason_code"]),
+                    reason=str(payload["reason"]),
+                    policy_id=payload.get("policy_id"),
+                    limits=payload.get("limits") or {},
+                )
         except Exception:
             pass
-        return self
+        return ToolPolicyDecision(
+            decision=PolicyDecision.UNAVAILABLE,
+            reason_code="POLICY_UNAVAILABLE",
+            reason="Policy service is unavailable",
+        )
+
+    def run_tool(
+        self, tool_name: str, fn: Any, *args: Any,
+        target_url: str | None = None, **kwargs: Any,
+    ) -> Any:
+        """Check policy, execute an allowed callable, and record the outcome."""
+        result = self.check_tool(tool_name, target_url=target_url)
+        if result.decision == PolicyDecision.BLOCK:
+            self.add_tool_call(tool_name, status="BLOCKED", blocked_reason=result.reason_code)
+            raise PolicyBlockedError(result)
+        if result.decision == PolicyDecision.REQUIRE_APPROVAL:
+            self.add_tool_call(
+                tool_name, status="PENDING_APPROVAL", requires_approval=True,
+                blocked_reason=result.reason_code,
+            )
+            raise ApprovalRequiredError(result)
+        if result.decision == PolicyDecision.UNAVAILABLE and self._policy_fail_mode == "closed":
+            self.add_tool_call(tool_name, status="BLOCKED", blocked_reason=result.reason_code)
+            raise PolicyUnavailableError(result)
+
+        started = time.monotonic()
+        try:
+            output = fn(*args, **kwargs)
+        except Exception as exc:
+            self.add_tool_call(
+                tool_name, output={"error_type": type(exc).__name__}, status="ERROR",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                blocked_reason=(result.reason_code if result.decision == PolicyDecision.UNAVAILABLE else None),
+            )
+            raise
+        self.add_tool_call(
+            tool_name, output=output, status="SUCCESS",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            blocked_reason=(result.reason_code if result.decision == PolicyDecision.UNAVAILABLE else None),
+        )
+        return output
 
     def add_model_call(
         self,
@@ -141,12 +207,19 @@ class Span:
         temperature: float | None = None,
         status: str = "SUCCESS",
     ) -> "Span":
+        """Record model usage.
+
+        ``estimated_cost`` is retained for source compatibility and sent as
+        informational legacy data. The backend ignores it when calculating
+        and persisting authoritative cost.
+        """
         payload: dict[str, Any] = {
             "provider": provider,
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "estimated_cost": estimated_cost,
+            "occurred_at": utcnow_iso(),
             "status": status.upper(),
         }
         if latency_ms is not None:
@@ -154,10 +227,7 @@ class Span:
         if temperature is not None:
             payload["temperature"] = temperature
 
-        try:
-            self._transport.add_model_call(self.span_id, payload)
-        except Exception:
-            pass
+        self._pending_child_calls.append(("model", payload))
         return self
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -197,4 +267,13 @@ class Span:
         try:
             self._transport.create_span(self._trace_id, payload)
         except Exception:
-            pass
+            return
+
+        for call_type, child_payload in self._pending_child_calls:
+            try:
+                if call_type == "tool":
+                    self._transport.add_tool_call(self.span_id, child_payload)
+                else:
+                    self._transport.add_model_call(self.span_id, child_payload)
+            except Exception:
+                pass

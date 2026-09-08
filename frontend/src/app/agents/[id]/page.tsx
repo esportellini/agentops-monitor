@@ -8,6 +8,7 @@ import { useAuthFetch } from "@/hooks/useAuthFetch";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { AgentPolicyEditor } from "@/components/agents/AgentPolicyEditor";
 
 interface Agent {
   id: number;
@@ -147,6 +148,8 @@ export default function AgentDetailPage() {
             </div>
           </section>
         </div>
+
+        <AgentPolicyEditor orgId={activeOrg!.id} agentId={agent.id} />
 
         {/* Placeholder metrics */}
         <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">

@@ -39,16 +39,13 @@ export default function PrivacyPage() {
     setSubmitting(true); setResult(null);
     try {
       if (action === "export") {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const r = await fetch.post(`/api/v1/organizations/${activeOrg.id}/privacy/export`, { subject_reference: subject || undefined, format: "json" }) as any;
         const parsed = typeof r?.data === "string" ? JSON.parse(r.data) : (r?.data ?? r);
         setResult(`Export complete. ${parsed?.traces?.length ?? 0} traces exported.`);
       } else if (action === "anonymize") {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const r = await fetch.post(`/api/v1/organizations/${activeOrg.id}/privacy/anonymize`, { subject_reference: subject }) as any;
         setResult(`Anonymized. ${r?.traces_anonymized ?? 0} traces updated → ${r?.anonymized_as ?? "?"}`);
       } else if (action === "retention") {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const r = await fetch.post(`/api/v1/organizations/${activeOrg.id}/privacy/run-retention`, {}) as any;
         setResult(`Retention executed. Traces deleted: ${r?.traces ?? 0}, Audit logs: ${r?.audit_logs ?? 0}`);
       } else if (action === "request") {

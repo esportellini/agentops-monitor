@@ -83,6 +83,7 @@ def _trace_summary(t: Trace) -> dict:
         "total_input_tokens": t.total_input_tokens,
         "total_output_tokens": t.total_output_tokens,
         "total_cost": float(t.total_cost),
+        "unpriced_model_calls": t.unpriced_model_calls,
         "session_id": t.session_id,
     }
 
@@ -123,6 +124,9 @@ def _span_detail(s: Span) -> dict:
                 "input_tokens": mc.input_tokens,
                 "output_tokens": mc.output_tokens,
                 "estimated_cost": float(mc.estimated_cost),
+                "occurred_at": mc.occurred_at.isoformat(),
+                "pricing_status": mc.pricing_status,
+                "pricing_id": mc.pricing_id,
                 "latency_ms": mc.latency_ms,
                 "temperature": mc.temperature,
                 "status": mc.status,
@@ -159,6 +163,23 @@ def _trace_detail(t: Trace) -> dict:
                 "input_tokens": cr.input_tokens,
                 "output_tokens": cr.output_tokens,
                 "cost_usd": float(cr.cost_usd),
+                "pricing_status": cr.pricing_status,
+                "pricing_id": cr.pricing_id,
+                "input_price_per_million": (
+                    float(cr.input_price_per_million)
+                    if cr.input_price_per_million is not None
+                    else None
+                ),
+                "output_price_per_million": (
+                    float(cr.output_price_per_million)
+                    if cr.output_price_per_million is not None
+                    else None
+                ),
+                "pricing_effective_from": (
+                    cr.pricing_effective_from.isoformat()
+                    if cr.pricing_effective_from
+                    else None
+                ),
                 "recorded_at": cr.recorded_at.isoformat(),
             }
             for cr in t.cost_records

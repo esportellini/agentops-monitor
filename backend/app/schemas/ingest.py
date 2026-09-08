@@ -80,6 +80,28 @@ class ToolCallCreate(BaseModel):
     blocked_reason: str | None = None
 
 
+class ToolPolicyCheck(BaseModel):
+    external_trace_id: str = Field(..., max_length=255)
+    tool_name: str = Field(..., min_length=1, max_length=255)
+    target_url: str | None = Field(default=None, max_length=2048)
+
+
+class TraceLimitStateOut(BaseModel):
+    token_state: Literal["NOT_CONFIGURED", "OK", "EXCEEDED", "UNKNOWN"]
+    cost_state: Literal["NOT_CONFIGURED", "OK", "EXCEEDED", "UNKNOWN"]
+    total_tokens: int
+    known_cost_usd: float
+    unpriced_model_calls: int
+
+
+class ToolPolicyCheckOut(BaseModel):
+    decision: Literal["ALLOW", "BLOCK", "REQUIRE_APPROVAL"]
+    reason_code: str
+    reason: str
+    policy_id: int | None
+    limits: TraceLimitStateOut
+
+
 # ── ModelCall ──────────────────────────────────────────────────────────────────
 
 class ModelCallCreate(BaseModel):
@@ -88,9 +110,17 @@ class ModelCallCreate(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     estimated_cost: float = Field(default=0.0, ge=0)
+    occurred_at: datetime | None = None
     latency_ms: int | None = None
     temperature: float | None = None
     status: ModelCallStatus
+
+    @field_validator("occurred_at")
+    @classmethod
+    def occurred_at_requires_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        return value
 
 
 # ── TraceEvent ─────────────────────────────────────────────────────────────────
@@ -157,6 +187,7 @@ class TraceOut(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     total_cost: float
+    unpriced_model_calls: int
     risk_level: Severity
 
     model_config = {"from_attributes": True}

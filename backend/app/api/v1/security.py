@@ -5,17 +5,20 @@ All endpoints are org-scoped.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.deps import OrgContext, require_analyst, require_org_member, require_role
 from app.db.session import get_db
 from app.models.alert import AlertIncident, AlertRule
 from app.models.enums import MemberRole, Severity
 from app.models.security import AgentPolicy, SecurityFinding, ToolApproval
+from app.models.project import Agent, Project
+from app.services.policy import normalize_policy_list
 from app.services import alerts as alerts_svc
 from app.services.security import scan_text, ALL_FINDING_TYPES, get_severity
 
@@ -147,7 +150,10 @@ async def security_overview(
 
     return {
         "unresolved_total": unresolved,
-        "by_severity": {str(sev): cnt for sev, cnt in sev_rows},
+        "by_severity": {
+            sev.value if isinstance(sev, Severity) else str(sev): cnt
+            for sev, cnt in sev_rows
+        },
         "by_type": [{"finding_type": t, "count": c} for t, c in type_rows],
         "top_agents": [{"agent_id": aid, "count": c} for aid, c in agent_rows],
     }
@@ -180,7 +186,11 @@ async def scan_content(
                 "severity": m.severity,
                 "title": m.title,
                 "description": m.description,
-                "matched_text": m.matched_text[:50] if m.matched_text else None,
+                "matched_text": (
+                    m.redaction_placeholder
+                    if m.redaction_placeholder
+                    else (m.matched_text[:50] if m.matched_text else None)
+                ),
                 "has_redaction": m.redaction_placeholder is not None,
             }
             for m in result.matches
@@ -189,6 +199,57 @@ async def scan_content(
 
 
 # ── Agent policies ────────────────────────────────────────────────────────────
+
+PolicyAction = Literal["detect", "redact", "alert", "block"]
+
+
+class PolicyCreate(BaseModel):
+    agent_id: int
+    allowed_tools: list[str] | None = None
+    blocked_tools: list[str] | None = None
+    tools_requiring_approval: list[str] | None = None
+    max_tokens_per_trace: int | None = Field(default=None, ge=0)
+    max_cost_per_trace_usd: float | None = Field(default=None, ge=0)
+    allowed_domains: list[str] | None = None
+    blocked_domains: list[str] | None = None
+    capture_inputs: bool = True
+    capture_outputs: bool = True
+    pii_action: PolicyAction = "alert"
+    secret_action: PolicyAction = "block"
+    injection_action: PolicyAction = "alert"
+    active: bool = True
+
+    @field_validator(
+        "allowed_tools", "blocked_tools", "tools_requiring_approval",
+        "allowed_domains", "blocked_domains",
+    )
+    @classmethod
+    def normalize_lists(cls, value: list[str] | None) -> list[str] | None:
+        return normalize_policy_list(value)
+
+
+class PolicyUpdate(BaseModel):
+    allowed_tools: list[str] | None = None
+    blocked_tools: list[str] | None = None
+    tools_requiring_approval: list[str] | None = None
+    max_tokens_per_trace: int | None = Field(default=None, ge=0)
+    max_cost_per_trace_usd: float | None = Field(default=None, ge=0)
+    allowed_domains: list[str] | None = None
+    blocked_domains: list[str] | None = None
+    capture_inputs: bool = True
+    capture_outputs: bool = True
+    pii_action: PolicyAction = "alert"
+    secret_action: PolicyAction = "block"
+    injection_action: PolicyAction = "alert"
+    active: bool = True
+
+    @field_validator(
+        "allowed_tools", "blocked_tools", "tools_requiring_approval",
+        "allowed_domains", "blocked_domains",
+    )
+    @classmethod
+    def normalize_lists(cls, value: list[str] | None) -> list[str] | None:
+        return normalize_policy_list(value)
 
 @router.get("/security/policies")
 async def list_policies(
@@ -205,38 +266,26 @@ async def list_policies(
 
 @router.post("/security/policies", status_code=201)
 async def create_policy(
-    payload: Annotated[dict, Body()],
+    payload: PolicyCreate,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    # Ensure only one policy per agent
+    owned_agent = await db.scalar(select(Agent.id).join(Project).where(
+        Agent.id == payload.agent_id, Project.organization_id == ctx.org_id
+    ))
+    if owned_agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     existing = (await db.execute(
         select(AgentPolicy).where(
-            AgentPolicy.agent_id == payload["agent_id"],
+            AgentPolicy.agent_id == payload.agent_id,
             AgentPolicy.organization_id == ctx.org_id,
         )
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Policy already exists for this agent. Use PATCH.")
 
-    p = AgentPolicy(
-        organization_id=ctx.org_id,
-        agent_id=payload["agent_id"],
-        created_by_id=ctx.user_id,
-        allowed_tools=payload.get("allowed_tools"),
-        blocked_tools=payload.get("blocked_tools"),
-        tools_requiring_approval=payload.get("tools_requiring_approval"),
-        max_tokens_per_trace=payload.get("max_tokens_per_trace"),
-        max_cost_per_trace_usd=payload.get("max_cost_per_trace_usd"),
-        allowed_domains=payload.get("allowed_domains"),
-        blocked_domains=payload.get("blocked_domains"),
-        capture_inputs=payload.get("capture_inputs", True),
-        capture_outputs=payload.get("capture_outputs", True),
-        pii_action=payload.get("pii_action", "alert"),
-        secret_action=payload.get("secret_action", "block"),
-        injection_action=payload.get("injection_action", "alert"),
-        active=payload.get("active", True),
-    )
+    p = AgentPolicy(organization_id=ctx.org_id, created_by_id=ctx.user_id, **payload.model_dump())
     db.add(p)
     await db.commit()
     await db.refresh(p)
@@ -246,7 +295,7 @@ async def create_policy(
 @router.patch("/security/policies/{policy_id}")
 async def update_policy(
     policy_id: int,
-    payload: Annotated[dict, Body()],
+    payload: PolicyUpdate,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
@@ -259,16 +308,8 @@ async def update_policy(
     if not p:
         raise HTTPException(status_code=404, detail="Policy not found")
 
-    _UPDATABLE = (
-        "allowed_tools", "blocked_tools", "tools_requiring_approval",
-        "max_tokens_per_trace", "max_cost_per_trace_usd",
-        "allowed_domains", "blocked_domains",
-        "capture_inputs", "capture_outputs",
-        "pii_action", "secret_action", "injection_action", "active",
-    )
-    for field in _UPDATABLE:
-        if field in payload:
-            setattr(p, field, payload[field])
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(p, field, value)
 
     await db.commit()
     await db.refresh(p)
