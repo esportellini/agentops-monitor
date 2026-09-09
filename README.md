@@ -1,357 +1,175 @@
 # AgentOps Monitor
 
-**Observabilidade e controle para agentes de IA em produção.**
+**Open-source observability, security, governance, FinOps, and evaluations for AI agents.**
 
-## Execute a demo integrada
+Trace what agents do, understand what they cost, enforce what they may do, and review what requires a human.
 
-Com Docker Desktop em execução, rode na raiz do repositório:
+[![CI](https://github.com/esportellini/agentops-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/esportellini/agentops-monitor/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)
+![Next.js 15.5](https://img.shields.io/badge/Next.js-15.5-111111)
+[![License: MIT](https://img.shields.io/badge/License-MIT-6d5fe5.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/esportellini/agentops-monitor)](https://github.com/esportellini/agentops-monitor/releases/latest)
+
+![AgentOps Monitor trace detail with span waterfall and model call inspector](docs/assets/agentops-trace-detail.png)
+
+## What it is
+
+AgentOps Monitor is a self-hosted control plane for teams operating AI agents. A Python SDK records hierarchical execution data while the backend applies security scanning, policy preflight, authoritative pricing, human approvals, runtime alerts, and evaluations. The Next.js console connects those signals for investigation and day-to-day operations.
+
+## Key capabilities
+
+| Capability | Status |
+|---|---|
+| Hierarchical traces, spans, tool calls, and model calls | Implemented |
+| Automatic sensitive-data detection and redaction | Implemented |
+| Authoritative, versioned model pricing | Implemented |
+| Runtime tool, domain, capture, security, and budget policies | Implemented |
+| Single-use human tool approvals | Implemented |
+| Scoped alert rules and incident lifecycle | Implemented |
+| Offline and optional OpenAI Responses evaluations | Implemented |
+| Deterministic end-to-end Docker demo | Implemented |
+
+## Run the demo
+
+Requirements: Python 3.12, Docker, Docker Compose, and free ports 3000, 8000, 5432, and 6379.
 
 ```bash
 python scripts/demo.py --reset
 ```
 
-O comando sobe a stack, cria a configuração pelas APIs reais, exercita tracing, segurança, custos, políticas, aprovações, alerts, erros e avaliações, e deixa o dashboard em [http://localhost:3000](http://localhost:3000). O resultado estruturado fica em `.demo/demo-report.json`. Veja [docs/DEMO.md](docs/DEMO.md) para os cenários e a execução repetida sem reset.
+The command builds the complete stack, configures it through real management APIs, generates linked traces, and verifies security, policies, approvals, pricing, alerts, evaluations, and dashboard APIs. It must finish with **10/10 deterministic scenarios passing** and leaves the console at [http://localhost:3000](http://localhost:3000).
 
----
+Demo credentials are local and fictitious:
 
-## O problema
-
-Agentes de IA fazem chamadas a modelos, ferramentas, APIs externas e processam dados potencialmente sensíveis dos usuários. Quando algo dá errado — custo fora de controle, resposta inadequada, dado sensível exposto, ferramenta não autorizada chamada — você precisa saber o que aconteceu, quando, e por quê.
-
-Logs convencionais não foram projetados para isso.
-
-## A solução
-
-AgentOps Monitor é uma plataforma B2B multi-tenant que coleta traces hierárquicos de execuções de agentes via SDK Python, processa, analisa e exibe em um dashboard com contexto completo: spans, tool calls, model calls, tokens, custos, segurança e avaliações.
-
----
-
-## Funcionalidades
-
-### Observabilidade
-- **Traces e Spans** hierárquicos com input/output, latência, status, custo
-- **Tool calls** com status de aprovação e detalhes de entrada/saída
-- **Model calls** com tokens, custo por provider/modelo e latência
-- **Eventos** customizados com severidade no contexto de cada trace
-
-### Custos
-- Precificação autoritativa no backend por provider + modelo + janela de vigência
-- Defaults globais com overrides isolados por organização
-- Snapshot histórico das tarifas usadas em cada model call
-- Modelos sem preço continuam observáveis e são marcados como `UNPRICED`
-- Custo por trace, agente, projeto, ambiente, modelo, período
-- Projeção mensal com base na média diária
-- Top traces mais caros
-
-### Segurança
-- Scanner automático de dados sensíveis no ingest (regex + Luhn + checksum CPF)
-- Redação estrutural antes da persistência e criação automática de findings
-- Detecção de prompt injection e SQL perigoso com agregação de risco da trace
-- Políticas ativas por agente para ferramentas, domínios, captura, ações de segurança e limites por trace
-- Preflight autenticado para bloquear ou exigir aprovação antes da execução de uma ferramenta
-- Aprovação humana por tentativa, com revalidação e consumo único
-- Detecção post-hoc de violações sem reescrever o status informado pela aplicação
-
-### Alerts
-- Eventos reais para novos security findings e traces finalizadas
-- Regras validadas por organização, projeto ou agente
-- Incidentes deduplicados com provenance e severity histórica
-- Workflow operacional `OPEN → ACKNOWLEDGED → RESOLVED`
-- Dashboard para criar regras, filtrar incidentes, reconhecer e resolver
-
-### Semântica das políticas
-
-O endpoint `POST /ingest/policy/check-tool` recebe o ID externo da trace, o nome da
-ferramenta e, opcionalmente, a URL alvo. O agente e a organização vêm da trace e da
-chave de ingestão; o cliente não pode escolher outra política. A decisão segue a
-precedência: bloqueio explícito, allowlist, domínio, limites excedidos, aprovação e
-permissão. Os limites usam apenas model calls já persistidas. O limite é excedido
-quando o uso é maior que o valor configurado; igualdade ainda é permitida. Quando
-há model calls sem preço e o custo conhecido não excedeu o limite, o estado do
-orçamento é `UNKNOWN`.
-
-As ações `detect`, `redact`, `alert` e `block` são registradas no finding. Uma
-regra pode usar `action_taken == alert` para criar um incidente configurável;
-a action isolada não cria spam obrigatório. `REQUIRE_APPROVAL` cria uma solicitação humana
-por tentativa, decidida por membros com role `ANALYST` ou superior. `block`
-substitui o conteúdo correspondente antes da
-persistência. Mesmo com captura de entradas ou saídas desativada, o backend faz a
-varredura em memória e guarda somente os findings seguros.
-
-### Avaliações
-- Datasets de casos de teste com isolamento por organização/projeto
-- Providers assíncronos: Mock offline e OpenAI Responses opcional
-- Consentimento explícito antes de enviar inputs de casos a provider externo
-- 7 avaliadores determinísticos: exact match, word presence, JSON structure, expected tools, cost limit, latency limit, required source
-- Usage real precificado pela tabela autoritativa do AgentOps, com estados `PRICED` e `UNPRICED`
-- Comparação de runs do mesmo dataset: A vs B com delta de pass rate, score, custo conhecido e latência
-- Human review por resultado
-
-### Privacidade / LGPD
-- Mapa de dados com finalidade e sensibilidade por categoria
-- Política de retenção configurável por organização
-- Anonimização de user_references
-- Solicitações de titular (exportar, anonimizar, deletar, acessar)
-- Registro de execução de políticas
-
-### Auditoria
-- Log imutável de todos os eventos relevantes
-- Filtros por tipo, severidade, usuário, entidade, período
-- Exportação CSV
-- Before/after data em alterações
-
----
-
-## Stack
-
-```
-Backend     FastAPI 0.115 + Python 3.12 + SQLAlchemy 2.0 async
-Database    PostgreSQL 15 (Alembic migrations)
-Cache/Auth  Redis 7 (JWT refresh tokens)
-Frontend    Next.js 14.2 + TypeScript + Tailwind CSS + TanStack Query
-SDK         Python (agentops-monitor package)
-Container   Docker + Docker Compose
-```
-
----
-
-## Instalação
-
-### Pré-requisitos
-- Docker Desktop com Compose v2
-- Portas livres: 3000 (frontend), 8000 (backend), 5432 (postgres), 6379 (redis)
-
-### 1. Clone ou extraia o projeto
-
-```bash
-cd agentops-monitor
-```
-
-### 2. Build e inicialização
-
-```bash
-docker compose down -v           # limpa volumes anteriores
-docker compose build --no-cache  # build completo
-docker compose up -d             # inicia em background
-docker exec agentops-monitor-backend-1 python seed.py  # seed com dados demo
-```
-
-### 3. Acesso
-
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- Swagger: http://localhost:8000/docs
-
----
-
-## Usuários demo
-
-| Email | Senha | Role |
+| User | Password | Role |
 |---|---|---|
-| owner@demo.agentops.dev | demo-owner-2024 | OWNER |
-| admin@demo.agentops.dev | demo-admin-2024 | ADMIN |
-| dev@demo.agentops.dev | demo-dev-2024 | DEVELOPER |
-| analyst@demo.agentops.dev | demo-analyst-2024 | ANALYST |
-| viewer@demo.agentops.dev | demo-viewer-2024 | VIEWER |
+| `owner@demo.agentops.dev` | `demo-owner-2024` | Owner |
+| `analyst@demo.agentops.dev` | `demo-analyst-2024` | Analyst |
 
-**Organização demo:** Acme AI (slug: `acme-ai`)
+> **Local demo only. Never use these credentials outside the demo stack.**
 
----
+Run `python scripts/demo.py` again without reset to verify idempotent bootstrap. The default demo never calls an external model. See [the demo guide](docs/DEMO.md) for optional flags and scenario details.
 
-## SDK Python
+![AgentOps Monitor operations overview with health metrics, attention queues, and execution charts](docs/assets/agentops-overview.png)
 
-### Instalação
+## Architecture
 
-```bash
-pip install agentops-monitor
-# ou em desenvolvimento:
-pip install -e ./sdk-python
+```mermaid
+flowchart LR
+    SDK[Python SDK] --> API[FastAPI ingest]
+    API --> PIPE[Security · policies · pricing]
+    PIPE --> DB[(PostgreSQL 16)]
+    DB --> OPS[Alerts · evaluations]
+    OPS --> UI[Next.js operations console]
+    UI --> AUTH[FastAPI auth/API]
+    AUTH --> REDIS[(Redis 7 sessions)]
 ```
 
-### Uso básico
+Ingest uses project-scoped API keys. Management APIs use short-lived JWT access tokens with refresh-token state in Redis. Every domain resource is scoped to an organization, and cross-organization access is rejected and audited.
+
+## Feature walkthrough
+
+### Observe and account for execution
+
+The trace explorer reconstructs span hierarchy, tool and model calls, status, latency, tokens, risk, and cost. Pricing is resolved server-side by provider, model, organization, and effective date. Calls without a matching rate remain visible as `UNPRICED`; they are never presented as free.
+
+### Govern risky actions
+
+Agent policies run before tools execute. They can allow or block tools and domains, require a human approval, disable payload capture, choose security actions, and enforce trace token or known-cost limits. Approved attempts are revalidated and consumed once.
+
+![AgentOps Monitor governance view with security findings and operational status](docs/assets/agentops-governance.png)
+
+### Evaluate quality and trade-offs
+
+Datasets run against a deterministic offline mock provider or the optional OpenAI Responses provider. External-provider execution requires explicit consent and a server-side `OPENAI_API_KEY`. Results combine deterministic evaluators, latency, provider errors, human review, and authoritative cost; run comparison highlights improved, regressed, and unchanged cases.
+
+![AgentOps Monitor evaluation comparison showing quality, cost, and latency deltas](docs/assets/agentops-evaluations.png)
+
+## Python SDK quickstart
+
+Install the SDK from this checkout:
+
+```bash
+python -m pip install -e ./sdk-python
+```
 
 ```python
 from agentops_monitor import AgentOps
 
 client = AgentOps(
-    api_key="agom_sua_chave",
+    api_key="agom_your_local_key",
     endpoint="http://localhost:8000",
+    policy_fail_mode="closed",
 )
 
-with client.trace(name="responder-pergunta") as trace:
-    trace.set_input({"pergunta": "Posso comprar PETR4?"})
-
-    with trace.span("buscar-docs", span_type="RETRIEVAL") as span:
-        docs = buscar_documentos()
-        span.set_output({"num_docs": len(docs)})
-        span.add_tool_call("vector_search", input={"q": "PETR4"}, output=docs)
-
-    with trace.span("chamar-llm", span_type="LLM") as span:
-        resposta = chamar_llm(docs)
-        span.add_model_call("openai", "gpt-4o",
-            input_tokens=500, output_tokens=120)
-
-    trace.set_output({"decisao": "pre_approval_required"})
+with client.trace("answer-request") as trace:
+    trace.set_input({"question": "What requires review?"})
+    with trace.span("retrieve-context", span_type="RETRIEVAL") as span:
+        span.set_output({"documents": 3})
+    trace.set_output({"status": "complete"})
 
 client.flush()
 ```
 
-Para aguardar uma decisão humana, mantendo uma solicitação por tentativa:
+See [the Python SDK guide](docs/PYTHON_SDK.md) for resilience, tool preflight, approvals, privacy controls, and model-call instrumentation.
 
-```python
-resultado = span.run_tool(
-    "send_email",
-    send_email,
-    wait_for_approval=True,
-    approval_timeout=120,
-    approval_context={
-        "recipient_group": "finance",
-        "operation": "send-monthly-report",
-    },
-)
-```
+## Tech stack
 
-Cada chamada gera um `external_request_id` opaco. Retries da mesma tentativa
-reutilizam a solicitação; uma chamada nova gera outra. Após aprovação, o backend
-revalida tools, domínio e limites. A aprovação é consumida pela primeira ToolCall
-executada. Rejeição lança `ApprovalRejectedError`; timeout lança
-`ApprovalTimeoutError` e mantém a solicitação pendente. Depois de uma resposta
-`REQUIRE_APPROVAL`, indisponibilidade nunca usa fail-open.
+- Python 3.12, FastAPI, SQLAlchemy async, Alembic
+- PostgreSQL 16 and Redis 7
+- Next.js 15.5 LTS, React 19, TypeScript, Tailwind CSS, TanStack Query, Recharts
+- Docker and Docker Compose
 
-Para impedir a execução antes de chamar uma ferramenta:
+## Security and privacy
 
-```python
-from agentops_monitor import AgentOps, ApprovalRequiredError, PolicyBlockedError
+Payloads are scanned before persistence. Supported findings include PII, credentials, API keys, bearer tokens, prompt injection, and dangerous SQL patterns. Configured actions can detect, redact, alert, or block; evidence stores safe metadata rather than the original secret. Retention, anonymization, subject requests, RBAC, and immutable audit records are built in.
 
-client = AgentOps(
-    api_key="agom_sua_chave",
-    endpoint="http://localhost:8000",
-    agent_id=42,
-    policy_fail_mode="closed",  # "open" executa se o serviço estiver indisponível
-)
+Production deployments must replace all local secrets, terminate TLS, restrict CORS, protect storage and backups, and provide infrastructure-level encryption. Report vulnerabilities through [the security policy](SECURITY.md), without including secrets in public issues.
 
-with client.trace("executar-busca") as trace:
-    with trace.span("buscar", span_type="TOOL") as span:
-        try:
-            resultado = span.run_tool(
-                "web_search", buscar, "agent policies",
-                target_url="https://search.example.com",
-            )
-        except (PolicyBlockedError, ApprovalRequiredError):
-            resultado = None
-```
+## Development and tests
 
-`span.check_tool()` retorna `ALLOW`, `BLOCK`, `REQUIRE_APPROVAL` ou o estado local
-`UNAVAILABLE`. `span.run_tool()` nunca confunde indisponibilidade com permissão: no
-modo `open` ele executa e registra `POLICY_UNAVAILABLE`; no modo `closed` ele lança
-`PolicyUnavailableError` sem executar a função.
-
-### Demo agent
-
-Use `python scripts/demo.py`; o runner cria e revoga sua própria chave de ingestão sem exibi-la.
-
----
-
-## Migrations
+Manual development setup:
 
 ```bash
-# Rodar no container:
-docker exec agentops-monitor-backend-1 alembic upgrade head
-
-# Ver histórico:
-docker exec agentops-monitor-backend-1 alembic history
+cp .env.example .env
+docker compose up --build
 ```
 
-Migrations (ordem):
-1. `0001_baseline` — schema base vazio
-2. `0002_full_schema` — todas as tabelas
-3. `0003_auth_columns` — brute-force fields
-4. `0004_agent_fields` — campos de budget/status
-5. `0005_model_pricing` — tabela de preços + seed
-6. `0006_security` — agent_policies, tool_approvals, security findings
-7. `0007_evaluations` — expand evaluation tables
-8. `0008_authoritative_pricing` — pricing por organização, status e provenance de custo
-9. `0009_tool_approval_runtime` — approval idempotente, consumo único e provenance
-10. `0010_runtime_alerts` — eventos runtime, escopos, dedupe e provenance de incidentes
-11. `0011_evaluation_provider_runtime` — providers async, métricas, pricing e unicidade dos resultados
-
----
-
-## Testes
+Local release checks:
 
 ```bash
 # Backend
-docker exec agentops-monitor-backend-1 pytest app/tests/ -v
+cd backend && pytest app/tests/ -v
 
 # SDK
-cd sdk-python
-pip install -e ".[dev]"
-pytest tests/ -v
+cd sdk-python && python -m pip install -e ".[dev]" && pytest tests/ -v
+
+# Demo unit tests
+pytest tests/test_demo.py tests/test_release_version.py -v
+
+# Frontend
+cd frontend && npm ci && npm run lint && npm run type-check && npm run build
 ```
 
----
+GitHub Actions repeats these checks, dependency audits, package build, and the real Docker demo.
 
-## Arquitetura de ingestão
+## Documentation
 
-```
-Agent → SDK → /ingest
-                │
-                ├── validação de organização/projeto/agente/ambiente
-                ├── scan estrutural de payloads
-                ├── redação de PII, tokens e secrets antes do storage
-                ├── persistência do trace/span/tool/event sanitizado
-                ├── criação de SecurityFinding com evidência segura
-                ├── agregação monotônica de Trace.risk_level
-                └── avaliação isolada de regras e criação de incidentes in-app
-```
+- [Architecture](docs/ARCHITECTURE.md)
+- [Reproducible demo](docs/DEMO.md)
+- [Product design system](docs/DESIGN.md)
+- [Security model](docs/SECURITY.md)
+- [Evaluations](docs/EVALUATIONS.md)
+- [Python SDK](docs/PYTHON_SDK.md)
+- [LGPD and privacy](docs/LGPD_AND_PRIVACY.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
 
-### Fluxo de custos
+## Limitations and roadmap
 
-```text
-ModelCall (provider + model + tokens + occurred_at)
-  → resolução de pricing versionado (override da organização ou default global)
-  → cálculo Decimal no backend
-  → ModelCall.estimated_cost (nome legado, valor autoritativo)
-  → CostRecord com snapshot das tarifas e da vigência
-  → totais da trace e analytics por modelo, projeto e agente
-```
+External Slack/email delivery, distributed background evaluation execution, SSO, OpenTelemetry ingestion, advanced anomaly detection, and production orchestration beyond Docker Compose are outside v0.2. The current alert workflow is in-app, and evaluation providers execute sequentially within the request.
 
-O `estimated_cost` enviado por clientes antigos continua aceito, mas é ignorado
-no cálculo e na persistência do custo. Se não houver preço aplicável, a chamada
-e seus tokens são preservados com status `UNPRICED`; um preço configurado como
-zero produz status `PRICED` e custo zero. Assim, ausência de configuração não é
-apresentada como uso gratuito.
+## License
 
-As linhas incluídas pela migration de seed são entradas de demonstração/default.
-Elas não formam um catálogo atualizado automaticamente e não são garantia dos
-preços atuais dos providers. Pricing é versionado e configurável por vigência.
-
----
-
-## Limitações
-
-- Providers reais (OpenAI, Anthropic) nas avaliações requerem integração adicional
-- Notificações externas (Slack, email) não fazem parte da v0.2
-- SSO (SAML/OIDC) não implementado nesta versão
-- Streaming de ingestão não suportado (batches recomendados para alto volume)
-- Encryption at rest é responsabilidade da camada de infraestrutura
-
----
-
-## Documentação
-
-| Arquivo | Conteúdo |
-|---|---|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Stack, topologia, data flow |
-| [PYTHON_SDK.md](docs/PYTHON_SDK.md) | SDK installation, usage, resilience |
-| [SECURITY.md](docs/SECURITY.md) | Scanner, policies, multi-tenancy |
-| [runtime-alerts.md](docs/architecture/runtime-alerts.md) | Runtime events, rules, incidents e dedupe |
-| [EVALUATIONS.md](docs/EVALUATIONS.md) | Datasets, evaluators, comparison |
-| [LGPD_AND_PRIVACY.md](docs/LGPD_AND_PRIVACY.md) | Data map, retention, subject rights |
-| [ROADMAP.md](docs/ROADMAP.md) | v0.2 → v1.0 planned features |
-
----
-
-## Licença
-
-MIT
+[MIT](LICENSE) © 2026 Enzo Sportellini.

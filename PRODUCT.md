@@ -28,7 +28,7 @@ The product is a dense, desktop-priority operations console used during routine 
 - Never invent unavailable metrics, trends, prices, or search capabilities.
 - Treat unpriced model calls as incomplete cost data, never zero cost.
 - Keep all existing user-facing routes functional and responsive.
-- Next.js remains at its current major and minor version during this redesign.
+- Release builds use a supported, security-patched Next.js line and preserve the validated console behavior.
 
 ## Brand Commitments
 

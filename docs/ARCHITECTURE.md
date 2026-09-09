@@ -6,12 +6,12 @@ AgentOps Monitor is a multi-tenant B2B SaaS observability platform for AI agents
 
 | Layer | Technology |
 |---|---|
-| Backend API | FastAPI 0.115 + Python 3.12 |
+| Backend API | FastAPI 0.141 + Python 3.12 |
 | ORM | SQLAlchemy 2.0 (async) |
 | Migrations | Alembic |
-| Database | PostgreSQL 15 |
+| Database | PostgreSQL 16 |
 | Cache / Sessions | Redis 7 |
-| Frontend | Next.js 14.2 + TypeScript + Tailwind CSS |
+| Frontend | Next.js 15.5 LTS + React 19 + TypeScript + Tailwind CSS |
 | State | TanStack Query v5 |
 | Auth | JWT (access 30 min + refresh 7 days via Redis) |
 | Container | Docker + Docker Compose |

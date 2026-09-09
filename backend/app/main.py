@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
 from app.db.redis import close_redis, get_redis
 from app.db.session import engine
+from app.version import PRODUCT_VERSION
 
 setup_logging()
 logger = get_logger(__name__)
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=PRODUCT_VERSION,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
     lifespan=lifespan,
@@ -40,6 +41,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 @app.exception_handler(Exception)

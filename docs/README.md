@@ -1,9 +1,13 @@
-# AgentOps Monitor — Docs
+# AgentOps Monitor documentation
 
-Documentation will live here. Planned sections:
-
-- **Getting started** — running the platform locally
-- **SDK integration** — instrumenting Python agents
-- **API reference** — ingestion and query endpoints
-- **Concepts** — traces, spans, tool calls, evaluations
-- **Self-hosting** — production deployment guide
+- [Architecture](ARCHITECTURE.md)
+- [Reproducible demo](DEMO.md)
+- [Product design system](DESIGN.md)
+- [Security model](SECURITY.md)
+- [Evaluations](EVALUATIONS.md)
+- [Python SDK](PYTHON_SDK.md)
+- [LGPD and privacy](LGPD_AND_PRIVACY.md)
+- [Roadmap](ROADMAP.md)
+- [Pricing architecture](architecture/pricing.md)
+- [Tool approvals](architecture/tool-approvals.md)
+- [Runtime alerts](architecture/runtime-alerts.md)

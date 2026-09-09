@@ -22,7 +22,7 @@ A plataforma inclui:
 - Suporte a LGPD: mapa de dados, retenção configurável, anonimização, exportação de dados do titular
 - Multi-tenancy com RBAC em 5 níveis
 
-**Stack:** FastAPI, SQLAlchemy async, PostgreSQL, Redis, Next.js 14, TypeScript, Docker.
+**Stack:** FastAPI, SQLAlchemy async, PostgreSQL, Redis, Next.js 15.5, React 19, TypeScript, Docker.
 
 **O que aprendi:**
 

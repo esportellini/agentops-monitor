@@ -60,7 +60,7 @@ class Transport:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "agentops-monitor-python/0.1.0",
+                "User-Agent": "agentops-monitor-python/0.2.0",
             },
             timeout=timeout,
         )
