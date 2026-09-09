@@ -100,6 +100,7 @@ async def span_create(
 
 
 @router.patch("/spans/{external_span_id}", response_model=SpanOut)
+@router.post("/spans/{external_span_id}", response_model=SpanOut, include_in_schema=False)
 async def span_update(
     external_span_id: str,
     body: SpanUpdate,

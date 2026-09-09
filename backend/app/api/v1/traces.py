@@ -113,6 +113,7 @@ def _span_detail(s: Span) -> dict:
                 "duration_ms": tc.duration_ms,
                 "requires_approval": tc.requires_approval,
                 "blocked_reason": tc.blocked_reason,
+                "approval_id": tc.approval_id,
             }
             for tc in s.tool_calls
         ],

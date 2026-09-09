@@ -2,6 +2,16 @@
 
 **Observabilidade e controle para agentes de IA em produção.**
 
+## Execute a demo integrada
+
+Com Docker Desktop em execução, rode na raiz do repositório:
+
+```bash
+python scripts/demo.py --reset
+```
+
+O comando sobe a stack, cria a configuração pelas APIs reais, exercita tracing, segurança, custos, políticas, aprovações, alerts, erros e avaliações, e deixa o dashboard em [http://localhost:3000](http://localhost:3000). O resultado estruturado fica em `.demo/demo-report.json`. Veja [docs/DEMO.md](docs/DEMO.md) para os cenários e a execução repetida sem reset.
+
 ---
 
 ## O problema
@@ -238,11 +248,7 @@ modo `open` ele executa e registra `POLICY_UNAVAILABLE`; no modo `closed` ele la
 
 ### Demo agent
 
-```bash
-cd examples/demo-agent
-pip install -r requirements.txt
-AGENTOPS_API_KEY=agom_... python agent.py
-```
+Use `python scripts/demo.py`; o runner cria e revoga sua própria chave de ingestão sem exibi-la.
 
 ---
 

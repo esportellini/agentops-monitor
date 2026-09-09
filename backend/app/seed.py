@@ -6,7 +6,7 @@ Run with:
 or via the CLI wrapper:
     python seed.py
 
-All data is fictional. Passwords are intentionally weak and printed to stdout.
+All data is fictional. Demo credentials are documented and secrets are never logged.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt_mod
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -79,6 +79,11 @@ def dt(days_ago: float = 0, hours_ago: float = 0, minutes_ago: float = 0) -> dat
 
 
 async def seed(db: AsyncSession) -> None:
+    existing = await db.scalar(select(Organization.id).where(Organization.slug == "acme-ai"))
+    if existing is not None:
+        log.info("demo seed already present", slug="acme-ai")
+        return
+
     # ── Organization ──────────────────────────────────────────────────────────
     org = Organization(name="Acme AI", slug="acme-ai", plan=OrgPlan.GROWTH)
     db.add(org)
@@ -791,20 +796,7 @@ async def seed(db: AsyncSession) -> None:
 
     await db.commit()
 
-    # ── Print credentials ─────────────────────────────────────────────────────
-    print("\n" + "=" * 62)
-    print("  AgentOps Monitor — Demo seed complete")
-    print("=" * 62)
-    print(f"\n  Organization : Acme AI  (slug: acme-ai)")
-    print(f"\n  {'Role':<12}  {'Email':<38}  {'Password'}")
-    print(f"  {'-'*12}  {'-'*38}  {'-'*20}")
-    for u in DEMO_USERS:
-        print(f"  {u['role'].value:<12}  {u['email']:<38}  {u['password']}")
-    print(f"\n  API Keys (shown once):")
-    print(f"    Production : {raw1}")
-    print(f"    Dev        : {raw2}")
-    print(f"    (revoked)  : {raw3}")
-    print("=" * 62 + "\n")
+    log.info("demo seed complete", slug="acme-ai")
 
 
 async def main() -> None:

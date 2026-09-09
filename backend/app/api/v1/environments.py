@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.deps import OrgContext, require_admin, require_developer, require_org_member
 from app.db.session import get_db
@@ -24,7 +25,12 @@ async def list_environments(
     project = await project_repo.get_by_id_and_org(db, project_id, ctx.org_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project.environments  # type: ignore[return-value]
+    result = await db.execute(
+        select(Environment)
+        .where(Environment.project_id == project_id)
+        .order_by(Environment.created_at)
+    )
+    return result.scalars().all()
 
 
 @router.post("", response_model=EnvironmentOut, status_code=status.HTTP_201_CREATED)

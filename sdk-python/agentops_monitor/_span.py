@@ -72,6 +72,19 @@ class Span:
 
     def __enter__(self) -> "Span":
         self._started_at = utcnow_iso()
+        payload: dict[str, Any] = {
+            "external_span_id": self.span_id,
+            "name": self._name,
+            "type": self._type,
+            "started_at": self._started_at,
+            "status": "RUNNING",
+        }
+        if self._parent_span_id:
+            payload["parent_span_id"] = self._parent_span_id
+        try:
+            self._transport.create_span(self._trace_id, payload)
+        except Exception:
+            pass
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
@@ -208,14 +221,23 @@ class Span:
         if result.decision == PolicyDecision.REQUIRE_APPROVAL:
             if not wait_for_approval:
                 raise ApprovalRequiredError(result)
-            result = self._wait_for_approval(
-                result,
-                tool_name=tool_name,
-                target_url=target_url,
-                approval_context=approval_context,
-                timeout=approval_timeout,
-                poll_interval=approval_poll_interval,
-            )
+            try:
+                result = self._wait_for_approval(
+                    result,
+                    tool_name=tool_name,
+                    target_url=target_url,
+                    approval_context=approval_context,
+                    timeout=approval_timeout,
+                    poll_interval=approval_poll_interval,
+                )
+            except ApprovalRejectedError as exc:
+                self.add_tool_call(
+                    tool_name,
+                    status="BLOCKED",
+                    requires_approval=True,
+                    blocked_reason=exc.reason_code,
+                )
+                raise
         if result.decision == PolicyDecision.UNAVAILABLE and self._policy_fail_mode == "closed":
             self.add_tool_call(tool_name, status="BLOCKED", blocked_reason=result.reason_code)
             raise PolicyUnavailableError(result)
@@ -360,15 +382,9 @@ class Span:
         self._finished = True
 
         payload: dict[str, Any] = {
-            "external_span_id": self.span_id,
-            "name": self._name,
-            "type": self._type,
-            "started_at": self._started_at,
             "ended_at": utcnow_iso(),
             "status": "SUCCESS" if ok else "ERROR",
         }
-        if self._parent_span_id:
-            payload["parent_span_id"] = self._parent_span_id
         if self._input is not None:
             payload["input_data"] = self._input
         if self._output is not None:
@@ -379,9 +395,9 @@ class Span:
             payload["metadata"] = self._metadata
 
         try:
-            self._transport.create_span(self._trace_id, payload)
+            self._transport.update_span(self.span_id, payload)
         except Exception:
-            return
+            pass
 
         for call_type, child_payload in self._pending_child_calls:
             try:

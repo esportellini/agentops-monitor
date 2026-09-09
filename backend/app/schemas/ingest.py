@@ -63,6 +63,7 @@ class SpanCreate(BaseModel):
 class SpanUpdate(BaseModel):
     ended_at: datetime | None = None
     status: SpanStatus | None = None
+    input_data: dict[str, Any] | None = None
     output_data: dict[str, Any] | None = None
     error_data: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None

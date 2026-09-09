@@ -1,0 +1,23 @@
+services:
+  backend:
+    environment:
+      SEED_DB: "true"
+
+  demo-runner:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: examples/demo-agent/Dockerfile
+    environment:
+      DEMO_BACKEND_URL: http://backend:8000
+      DEMO_REPORT_PATH: /app/.demo/demo-report.json
+      DEMO_OWNER_EMAIL: owner@demo.agentops.dev
+      DEMO_OWNER_PASSWORD: demo-owner-2024
+      DEMO_REVIEWER_EMAIL: analyst@demo.agentops.dev
+      DEMO_REVIEWER_PASSWORD: demo-analyst-2024
+      DEMO_OPENAI_MODEL: ${DEMO_OPENAI_MODEL:-gpt-4.1-mini}
+    volumes:
+      - ./.demo:/app/.demo
+    depends_on:
+      backend:
+        condition: service_healthy

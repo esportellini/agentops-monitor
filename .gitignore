@@ -42,3 +42,6 @@ redis_data/
 
 # Logs
 *.log
+
+# Local end-to-end demo artifacts
+.demo/

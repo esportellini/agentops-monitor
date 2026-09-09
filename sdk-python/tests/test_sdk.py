@@ -175,6 +175,7 @@ def test_rejected_and_timed_out_approvals_never_execute(status, error):
         return_value=ok_response({"approval_id": 123, "status": status})
     )
     respx.post(url__regex=r".*/spans$").mock(return_value=ok_response())
+    tool = respx.post(url__regex=r".*/tool-calls$").mock(return_value=ok_response())
     respx.post(url__regex=r".*/events$").mock(return_value=ok_response())
     respx.post(url__regex=r".*/finish$").mock(return_value=ok_response())
     called = False
@@ -190,6 +191,11 @@ def test_rejected_and_timed_out_approvals_never_execute(status, error):
                     approval_poll_interval=0.01,
                 )
     assert called is False
+    if status == "rejected":
+        assert tool.call_count == 1
+        assert b'"blocked_reason":"APPROVAL_REJECTED"' in tool.calls.last.request.content
+    else:
+        assert tool.call_count == 0
 
 
 def test_backend_unavailable_after_approval_requirement_never_fails_open():
@@ -331,6 +337,7 @@ def test_span_is_created_before_its_child_calls():
         patch.object(Transport, "start_trace", return_value={"id": 1}),
         patch.object(Transport, "finish_trace"),
         patch.object(Transport, "create_span", side_effect=lambda *_: order.append("span")),
+        patch.object(Transport, "update_span"),
         patch.object(Transport, "add_tool_call", side_effect=lambda *_: order.append("tool")),
         patch.object(Transport, "add_model_call", side_effect=lambda *_: order.append("model")),
     ):
@@ -350,6 +357,7 @@ def test_model_call_automatically_includes_utc_occurred_at():
         patch.object(Transport, "start_trace", return_value={"id": 1}),
         patch.object(Transport, "finish_trace"),
         patch.object(Transport, "create_span"),
+        patch.object(Transport, "update_span"),
         patch.object(
             Transport,
             "add_model_call",
@@ -372,13 +380,13 @@ def test_exception_inside_span_sets_error_status():
     client = make_client()
     captured_span_payload: dict = {}
 
-    original_create = Transport.create_span
+    original_update = Transport.update_span
 
-    def capturing_create(self, trace_id, payload):
+    def capturing_update(self, span_id, payload):
         captured_span_payload.update(payload)
-        return original_create(self, trace_id, payload)
+        return original_update(self, span_id, payload)
 
-    with patch.object(Transport, "create_span", capturing_create):
+    with patch.object(Transport, "update_span", capturing_update):
         with client.trace("trace-with-error") as trace:
             try:
                 with trace.span("failing-span") as span:
@@ -527,13 +535,13 @@ def test_redact_fn_applied_to_inputs():
         return data
 
     client = make_client(redact_fn=redact)
-    original_create = Transport.create_span
+    original_update = Transport.update_span
 
-    def spy_create(self, trace_id, payload):
+    def spy_update(self, span_id, payload):
         captured.append(payload)
-        return original_create(self, trace_id, payload)
+        return original_update(self, span_id, payload)
 
-    with patch.object(Transport, "create_span", spy_create):
+    with patch.object(Transport, "update_span", spy_update):
         with client.trace("redact-trace") as trace:
             with trace.span("login") as span:
                 span.set_input({"username": "alice", "password": "hunter2"})
@@ -636,14 +644,14 @@ def test_capture_inputs_false_omits_data():
 def test_capture_inputs_and_outputs_are_independent():
     respx.post(url__regex=r".*").mock(return_value=ok_response())
     captured: list[dict] = []
-    original = Transport.create_span
+    original = Transport.update_span
 
-    def spy(self, trace_id, payload):
+    def spy(self, span_id, payload):
         captured.append(payload)
-        return original(self, trace_id, payload)
+        return original(self, span_id, payload)
 
     client = make_client(capture_inputs=False, capture_outputs=True)
-    with patch.object(Transport, "create_span", spy):
+    with patch.object(Transport, "update_span", spy):
         with client.trace("output-only") as trace:
             with trace.span("work") as span:
                 span.set_input({"sensitive": "data"})

@@ -405,6 +405,10 @@ async def update_span(
     if body.ended_at is not None:
         span.ended_at = body.ended_at
         span.duration_ms = _duration_ms(span.started_at, body.ended_at)
+    if body.input_data is not None:
+        input_scan = _secure_scan(body.input_data, "input_data", policy)
+        span.input_data = input_scan.sanitized if policy is None or policy.capture_inputs else None
+        scans.append(input_scan)
     if body.output_data is not None:
         output_scan = _secure_scan(body.output_data, "output_data", policy)
         span.output_data = output_scan.sanitized if policy is None or policy.capture_outputs else None
