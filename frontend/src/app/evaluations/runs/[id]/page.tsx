@@ -13,11 +13,13 @@ interface Result {
   latency_ms: number | null; cost: number | null; actual_output: Record<string,unknown> | null;
   evaluator_details: Record<string,unknown> | null; human_review_status: string | null;
   human_review_note: string | null; error: string | null;
+  input_tokens: number|null; output_tokens:number|null; pricing_status:string|null;
 }
 interface Run {
   id: number; name: string; status: string; provider: string|null; model: string|null;
   pass_rate: number|null; average_score: number|null; total_cost: number|null;
   average_latency_ms: number|null; total_cases: number|null; passed_cases: number|null;
+  executed_cases:number|null; error_cases:number|null; unpriced_cases:number|null; failure_reason:string|null;
   results: Result[];
 }
 
@@ -60,13 +62,16 @@ export default function RunDetailPage() {
           <p className="text-sm text-text-secondary">{run.provider}{run.model ? ` / ${run.model}` : ""} · Status: <span className={run.status === "COMPLETED" ? "text-status-ok" : "text-text-secondary"}>{run.status}</span></p>
         </div>
 
-        <div className="mb-6 grid grid-cols-5 gap-3">
+        {run.failure_reason && <div className="mb-4 rounded-md border border-status-error/20 bg-status-error/5 p-3 text-sm text-status-error">{run.failure_reason}</div>}
+
+        <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-6">
           {[
             ["Pass rate", run.pass_rate != null ? `${(run.pass_rate*100).toFixed(1)}%` : "—"],
             ["Avg score", run.average_score != null ? run.average_score.toFixed(2) : "—"],
-            ["Total cost", run.total_cost != null ? `$${run.total_cost.toFixed(4)}` : "—"],
+            ["Known cost", run.total_cost != null ? `$${run.total_cost.toFixed(4)}` : "—"],
+            ["Unpriced", String(run.unpriced_cases ?? 0)],
             ["Avg latency", run.average_latency_ms != null ? `${run.average_latency_ms.toFixed(0)}ms` : "—"],
-            ["Cases", `${run.passed_cases ?? 0}/${run.total_cases ?? 0}`],
+            ["Cases", `${run.passed_cases ?? 0}/${run.total_cases ?? 0} · ${run.error_cases ?? 0} errors`],
           ].map(([label, val]) => (
             <div key={label as string} className="rounded-lg border border-surface-border bg-surface-card p-3">
               <p className="text-xs text-text-muted">{label}</p>
@@ -81,12 +86,14 @@ export default function RunDetailPage() {
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
                   <span className={cn("text-xs font-bold", r.passed ? "text-status-ok" : r.passed === false ? "text-status-error" : "text-text-muted")}>
-                    {r.passed ? "PASS" : r.passed === false ? "FAIL" : "—"}
+                    {r.error ? "PROVIDER ERROR" : r.passed ? "PASS" : r.passed === false ? "FAIL" : "—"}
                   </span>
                   <span className="text-xs text-text-muted">Case #{r.case_id}</span>
                   {r.score != null && <span className="text-xs text-text-secondary">Score: {r.score.toFixed(2)}</span>}
                   {r.latency_ms != null && <span className="text-xs text-text-muted">{r.latency_ms}ms</span>}
                   {r.cost != null && <span className="text-xs text-text-muted">${r.cost.toFixed(5)}</span>}
+                  <span className="text-xs text-text-muted">{r.pricing_status ?? "—"}</span>
+                  {(r.input_tokens != null || r.output_tokens != null) && <span className="text-xs text-text-muted">{r.input_tokens ?? "?"} in / {r.output_tokens ?? "?"} out</span>}
                 </div>
                 <div className="flex items-center gap-2">
                   {r.human_review_status && (

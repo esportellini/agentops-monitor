@@ -32,6 +32,22 @@ Browser (localhost:3000)
               └── Redis (port 6379)
 ```
 
+## Evaluation flow
+
+```text
+EvaluationDataset / EvaluationCase
+        ↓ tenant and config validation
+Async provider (mock or optional OpenAI Responses)
+        ↓ normalized dict output + usage + monotonic latency
+AgentOps authoritative pricing
+        ↓ PRICED / UNPRICED / MOCK provenance
+Deterministic evaluators
+        ↓
+EvaluationResult → run aggregation → same-dataset comparison → human review
+```
+
+Provider execution is sequential and remains inside the HTTP request in v0.2. OpenAI credentials exist only in backend settings. Expected outputs stay inside AgentOps, external-data consent is mandatory, and no provider tools are configured.
+
 ## Multi-tenancy
 
 Every resource is scoped to an `organization_id`. The RBAC system enforces:

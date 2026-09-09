@@ -1,7 +1,7 @@
 # Roadmap
 
 ## v0.2 — Real providers
-- OpenAI and Anthropic providers for evaluation runs
+- Anthropic provider for evaluation runs
 - Streaming support in ingest API
 - Webhook notifications for alert incidents
 - Slack / email notification channels

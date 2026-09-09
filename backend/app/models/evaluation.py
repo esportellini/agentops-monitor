@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from decimal import Decimal
+
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -75,6 +77,7 @@ class EvaluationRun(Base, TimestampMixin):
     agent_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_api: Mapped[str | None] = mapped_column(String(50), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     status: Mapped[EvaluationStatus] = mapped_column(
@@ -90,6 +93,10 @@ class EvaluationRun(Base, TimestampMixin):
     average_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
     passed_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    executed_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unpriced_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Runner configuration (JSON)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -100,6 +107,7 @@ class EvaluationRun(Base, TimestampMixin):
 
 class EvaluationResult(Base, TimestampMixin):
     __tablename__ = "evaluation_results"
+    __table_args__ = (UniqueConstraint("run_id", "case_id", name="uq_evaluation_result_run_case"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(
@@ -115,6 +123,14 @@ class EvaluationResult(Base, TimestampMixin):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pricing_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pricing_id: Mapped[int | None] = mapped_column(
+        ForeignKey("model_pricing.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    input_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(14, 8), nullable=True)
+    output_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(14, 8), nullable=True)
 
     # Per-evaluator detail: {"exact_match": true, "word_presence": {...}, ...}
     evaluator_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

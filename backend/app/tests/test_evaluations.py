@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.evaluator import (
     MockProvider,
+    ProviderContext,
     RunnerOutput,
     cost_limit,
     exact_match,
@@ -197,24 +198,27 @@ def test_run_evaluators_empty_list():
 
 # ── MockProvider ──────────────────────────────────────────────────────────────
 
-def test_mock_provider_returns_output():
+@pytest.mark.asyncio
+async def test_mock_provider_returns_output():
     p = MockProvider()
-    out = p.run({"question": "hello"}, {})
+    out = await p.run({"question": "hello"}, {}, ProviderContext(1, None))
     assert out.actual_output
     assert out.latency_ms > 0
     assert out.cost >= 0
 
 
-def test_mock_provider_tools_called():
+@pytest.mark.asyncio
+async def test_mock_provider_tools_called():
     p = MockProvider()
-    out = p.run({}, {"mock_tools_called": ["search", "summarize"]})
+    out = await p.run({}, {"mock_tools_called": ["search", "summarize"]}, ProviderContext(1, None))
     assert "search" in out.actual_tools_used
     assert "summarize" in out.actual_tools_used
 
 
-def test_mock_provider_output_override():
+@pytest.mark.asyncio
+async def test_mock_provider_output_override():
     p = MockProvider()
-    out = p.run({}, {"mock_output_override": {"answer": "overridden"}})
+    out = await p.run({}, {"mock_output_override": {"answer": "overridden"}}, ProviderContext(1, None))
     assert out.actual_output["answer"] == "overridden"
 
 

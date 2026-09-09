@@ -7,7 +7,7 @@ import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 import { cn } from "@/lib/utils";
 
 interface Run { id: number; name: string; status: string; pass_rate: number|null; average_score: number|null; total_cost: number|null; average_latency_ms: number|null; total_cases: number|null; }
-type RunSummary = { id:number; name:string; provider:string|null; model:string|null; pass_rate:number|null; average_score:number|null; total_cost:number|null; average_latency_ms:number|null; total_cases:number|null; passed_cases:number|null; };
+type RunSummary = { id:number; name:string; provider:string|null; model:string|null; pass_rate:number|null; average_score:number|null; total_cost:number|null; average_latency_ms:number|null; total_cases:number|null; passed_cases:number|null; error_cases:number|null; unpriced_cases:number|null; };
 interface Comparison {
   run_a: RunSummary;
   run_b: RunSummary;
@@ -20,6 +20,7 @@ interface Comparison {
   delta_score: number;
   delta_cost: number;
   delta_latency_ms: number;
+  cost_comparison_complete: boolean;
 }
 
 const pct = (v: number|null) => v==null ? "—" : `${(v*100).toFixed(1)}%`;
@@ -91,7 +92,9 @@ export default function ComparePage() {
                         ["Provider / Model", [r.provider, r.model].filter(Boolean).join(" / ") || "—"],
                         ["Pass rate", pct(r.pass_rate)],
                         ["Avg score", r.average_score != null ? r.average_score.toFixed(2) : "—"],
-                        ["Total cost", usd(r.total_cost)],
+                        ["Known cost", usd(r.total_cost)],
+                        ["Unpriced cases", String(r.unpriced_cases ?? 0)],
+                        ["Provider errors", String(r.error_cases ?? 0)],
                         ["Avg latency", r.average_latency_ms != null ? `${r.average_latency_ms.toFixed(0)}ms` : "—"],
                         ["Cases", `${r.passed_cases ?? 0}/${r.total_cases ?? 0}`],
                       ] as [string, string][]).map(([lbl, val]) => (
@@ -122,6 +125,7 @@ export default function ComparePage() {
                   </div>
                 ))}
               </div>
+              {!comparison.cost_comparison_complete && <p className="mt-3 text-xs text-yellow-400">Cost comparison is incomplete because at least one run contains unpriced cases.</p>}
             </div>
 
             {/* Case outcomes */}

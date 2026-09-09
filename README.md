@@ -69,9 +69,12 @@ persistência. Mesmo com captura de entradas ou saídas desativada, o backend fa
 varredura em memória e guarda somente os findings seguros.
 
 ### Avaliações
-- Datasets de casos de teste offline
+- Datasets de casos de teste com isolamento por organização/projeto
+- Providers assíncronos: Mock offline e OpenAI Responses opcional
+- Consentimento explícito antes de enviar inputs de casos a provider externo
 - 7 avaliadores determinísticos: exact match, word presence, JSON structure, expected tools, cost limit, latency limit, required source
-- Comparação de runs: A vs B com delta de pass rate, score, custo, latência
+- Usage real precificado pela tabela autoritativa do AgentOps, com estados `PRICED` e `UNPRICED`
+- Comparação de runs do mesmo dataset: A vs B com delta de pass rate, score, custo conhecido e latência
 - Human review por resultado
 
 ### Privacidade / LGPD
@@ -264,6 +267,7 @@ Migrations (ordem):
 8. `0008_authoritative_pricing` — pricing por organização, status e provenance de custo
 9. `0009_tool_approval_runtime` — approval idempotente, consumo único e provenance
 10. `0010_runtime_alerts` — eventos runtime, escopos, dedupe e provenance de incidentes
+11. `0011_evaluation_provider_runtime` — providers async, métricas, pricing e unicidade dos resultados
 
 ---
 

@@ -1,78 +1,69 @@
 # Evaluations
 
-AgentOps Monitor supports offline evaluation of agents using test datasets.
-Evaluations are deterministic by default — no LLM required.
+AgentOps Monitor owns the complete evaluation domain: datasets, cases, deterministic evaluators, scoring, pass/fail, comparison, human review, and cost attribution. A provider only turns a case input into an actual output.
 
-## Concepts
+```text
+dataset → provider → normalized output → deterministic evaluators → result → comparison/review
+```
 
-- **Dataset** — collection of test cases with inputs and expected outputs
-- **Case** — one test input + optional expected output + optional expected tools
-- **Run** — execution of a dataset against a provider/model configuration
-- **Result** — outcome of one case in a run, with per-evaluator details
+## Providers
+
+`mock` is always available and works offline. Its latency and cost are simulated values from the run configuration and results are marked `MOCK`.
+
+`openai` is optional and uses the official asynchronous Python SDK and Responses API. Configure `OPENAI_API_KEY` in the backend environment, select a model ID on each run, and explicitly consent to sending case inputs to the external provider. Credentials never enter the request body, run config, database, frontend, or audit log.
+
+Provider status is available from `GET /organizations/{id}/evaluations/providers`. An unavailable OpenAI provider fails the selected run clearly; it never falls back to mock.
+
+OpenAI receives only a deterministic JSON serialization of `EvaluationCase.input_data`, plus optional plain `instructions`. Expected outputs are retained inside AgentOps for scoring. No tools, web search, file search, function calling, or computer use are configured. Responses are normalized as `{"text":"..."}` in text mode. JSON mode parses a returned JSON object; malformed JSON creates a safe case-level error.
+
+Execution is sequential in the HTTP request. Each provider call has a server-side timeout of 30 seconds and at most two SDK retries by default. Background and large-scale execution remain future work.
 
 ## Evaluators
 
-All evaluators are pure Python functions. They never call an external API.
+All evaluator configurations are validated before a run starts.
 
-| Evaluator | Config | Description |
+| Evaluator | Required/basic config | Description |
 |---|---|---|
-| `exact_match` | `fields: list` | Field-level equality (or full dict) |
-| `word_presence` | `keywords: list` | All keywords must appear in output |
-| `json_structure` | `required_keys: list` | Output must have all required keys |
-| `expected_tools` | `strict: bool` | Tool calls must match expected set |
-| `cost_limit` | `max_cost_usd: float` | Cost must be below threshold |
-| `latency_limit` | `max_latency_ms: int` | Latency must be below threshold |
-| `required_source` | `sources: list` | At least one source ID must be cited |
+| `exact_match` | optional `fields: string[]` | Field equality or full object equality |
+| `word_presence` | `keywords: string[]` | Every keyword appears in normalized output |
+| `json_structure` | `required_keys: string[]` | Output contains required keys |
+| `expected_tools` | optional `strict: boolean` | Tool list matches the case expectation |
+| `cost_limit` | `max_cost_usd >= 0` | Case cost stays within the limit |
+| `latency_limit` | `max_latency_ms >= 0` | Provider latency stays within the limit |
+| `required_source` | `sources: string[]` | At least one source identifier is present |
 
-## Run configuration
+Skipped evaluators retain compatibility with a passing result and explicitly include `skipped: true` in their details. `cost_limit` fails as indeterminate when real provider pricing is unavailable; an unknown model is never treated as free.
+
+## OpenAI run example
 
 ```json
 {
   "dataset_id": 1,
-  "name": "GPT-4o vs Claude baseline",
-  "provider": "mock",
-  "model": "gpt-4o",
-  "agent_version": "2.1.0",
+  "name": "Responses baseline",
+  "provider": "openai",
+  "model": "<openai-model-id>",
   "config": {
+    "instructions": "Answer concisely.",
+    "output_mode": "text",
+    "allow_external_provider_data": true,
     "evaluators": [
-      { "name": "exact_match", "fields": ["decision"] },
-      { "name": "word_presence", "keywords": ["approved", "rejected"] },
-      { "name": "cost_limit", "max_cost_usd": 0.01 },
-      { "name": "latency_limit", "max_latency_ms": 2000 }
+      {"name": "exact_match", "fields": ["text"]},
+      {"name": "cost_limit", "max_cost_usd": 0.01}
     ]
   }
 }
 ```
 
-## Human review
+## Lifecycle and metrics
 
-Each result can be marked `approved`, `rejected`, or `needs_review`
-via `POST /organizations/{id}/evaluation-results/{result_id}/human-review`.
+Only `PENDING` runs may execute. `RUNNING` and `COMPLETED` runs reject another execution, protecting the unique `(run_id, case_id)` invariant. A `FAILED` run records a safe run-level configuration/provider reason. Provider timeout, transient failure, or malformed JSON after execution creates a failed result for that case and later cases continue; the run completes with `error_cases > 0`.
 
-## Run comparison
+`pass_rate = passed_cases / total_cases`, so provider errors remain visible as case failures. Average score uses cases with evaluator output. Average latency uses calls with a measured duration.
 
-`GET /organizations/{id}/evaluation-runs/compare?run_a=1&run_b=2`
+OpenAI token usage resolves through AgentOps `model_pricing` by organization, provider, model, and execution time. Each result stores the pricing row and rate snapshot when found. `PRICED` may legitimately cost zero; `UNPRICED` preserves usage without inventing cost. Run `total_cost` is the known priced total and `unpriced_cases` makes incomplete totals explicit.
 
-Returns:
-- delta pass rate, score, cost, latency
-- case IDs that improved (B better than A)
-- case IDs that regressed (A better than B)
-- cases where both pass / both fail
+## Isolation, comparison, and review
 
-## Adding real providers
+Dataset projects, run datasets, and agents are checked against the active organization. For project-scoped datasets, the optional agent must belong to that same project. Comparisons require both runs in the organization and the same dataset, which keeps case-level improvements and regressions meaningful.
 
-Implement the `MockProvider` interface in `app/services/evaluator.py`:
-
-```python
-class OpenAIProvider:
-    name = "openai"
-
-    def run(self, case_input: dict, config: dict) -> RunnerOutput:
-        # call OpenAI API
-        ...
-```
-
-Register in `PROVIDERS`:
-```python
-PROVIDERS["openai"] = OpenAIProvider()
-```
+Human review remains independent of deterministic pass/fail. A result can be `approved`, `rejected`, or `needs_review` through `POST /organizations/{id}/evaluation-results/{result_id}/human-review`.

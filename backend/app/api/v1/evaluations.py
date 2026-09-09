@@ -4,17 +4,68 @@ Evaluation API: datasets, cases, runs, results, comparison, human review.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import OrgContext, require_analyst, require_org_member
 from app.db.session import get_db
 from app.models.evaluation import EvaluationCase, EvaluationDataset, EvaluationResult, EvaluationRun
 from app.services import evaluation as eval_svc
+from app.services.evaluator import provider_availability
 
 router = APIRouter(prefix="/organizations/{org_id}", tags=["evaluations"])
+
+
+class DatasetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    version: str = Field(default="1.0.0", min_length=1, max_length=50)
+    project_id: int | None = None
+    tags: list[str] | None = None
+
+
+class CaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input_data: dict[str, Any]
+    expected_output: dict[str, Any] | None = None
+    expected_tools: list[str] | None = None
+    tags: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class RunConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evaluators: list[dict[str, Any]] | None = None
+    instructions: str | None = Field(default=None, max_length=20_000)
+    output_mode: str = "text"
+    allow_external_provider_data: bool = False
+    mock_latency_ms: int | None = Field(default=None, ge=0, le=60_000)
+    mock_cost: float | None = Field(default=None, ge=0)
+    mock_error_rate: float | None = Field(default=None, ge=0, le=1)
+    mock_output_override: dict[str, Any] | None = None
+    mock_tools_called: list[str] | None = None
+
+
+class RunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: int
+    name: str = Field(default="Evaluation run", min_length=1, max_length=255)
+    provider: str = "mock"
+    model: str | None = Field(default=None, max_length=100)
+    agent_id: int | None = None
+    agent_version: str | None = Field(default=None, max_length=100)
+    prompt_version: str | None = Field(default=None, max_length=100)
+    config: RunConfig = Field(default_factory=RunConfig)
+
+
+class HumanReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str
+    note: str | None = None
 
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
@@ -30,11 +81,14 @@ async def list_datasets(
 
 @router.post("/evaluation-datasets", status_code=201)
 async def create_dataset(
-    payload: Annotated[dict, Body()],
+    payload: Annotated[DatasetCreate, Body()],
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    ds = await eval_svc.create_dataset(db, ctx.org_id, payload, user_id=ctx.user_id)
+    try:
+        ds = await eval_svc.create_dataset(db, ctx.org_id, payload.model_dump(), user_id=ctx.user_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     await db.commit()
     await db.refresh(ds)
     return _ds_out(ds)
@@ -55,11 +109,11 @@ async def get_dataset(
 @router.post("/evaluation-datasets/{dataset_id}/cases", status_code=201)
 async def add_case(
     dataset_id: int,
-    payload: Annotated[dict, Body()],
+    payload: Annotated[CaseCreate, Body()],
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    case = await eval_svc.add_case(db, dataset_id, ctx.org_id, payload)
+    case = await eval_svc.add_case(db, dataset_id, ctx.org_id, payload.model_dump())
     if not case:
         raise HTTPException(404, "Dataset not found")
     await db.commit()
@@ -68,6 +122,12 @@ async def add_case(
 
 
 # ── Runs ──────────────────────────────────────────────────────────────────────
+
+@router.get("/evaluations/providers")
+async def list_providers(
+    ctx: OrgContext = Depends(require_org_member),
+):
+    return {"providers": provider_availability()}
 
 @router.get("/evaluation-runs")
 async def list_runs(
@@ -83,11 +143,17 @@ async def list_runs(
 
 @router.post("/evaluation-runs", status_code=201)
 async def create_and_execute_run(
-    payload: Annotated[dict, Body()],
+    payload: Annotated[RunCreate, Body()],
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    run = await eval_svc.create_run(db, ctx.org_id, payload, user_id=ctx.user_id)
+    data = payload.model_dump(exclude_none=True)
+    if data.get("config", {}).get("evaluators") is None:
+        data["config"].pop("evaluators", None)
+    try:
+        run = await eval_svc.create_run(db, ctx.org_id, data, user_id=ctx.user_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     await db.flush()
     run = await eval_svc.execute_run(db, run)
     await db.commit()
@@ -104,7 +170,8 @@ async def compare_runs(
 ):
     result = await eval_svc.compare_runs(db, run_a, run_b, ctx.org_id)
     if "error" in result:
-        raise HTTPException(404, result["error"])
+        status = 404 if result.get("error_code") == "not_found" else 422
+        raise HTTPException(status, result["error"])
     return result
 
 
@@ -125,18 +192,18 @@ async def get_run(
 @router.post("/evaluation-results/{result_id}/human-review")
 async def human_review(
     result_id: int,
-    payload: Annotated[dict, Body()],
+    payload: Annotated[HumanReviewCreate, Body()],
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    status = payload.get("status")
+    status = payload.status
     if status not in ("approved", "rejected", "needs_review"):
         raise HTTPException(422, "status must be approved | rejected | needs_review")
 
     result = await eval_svc.submit_human_review(
         db, result_id, ctx.org_id,
         status=status,
-        note=payload.get("note"),
+        note=payload.note,
         reviewer_id=ctx.user_id,
     )
     if not result:
@@ -183,6 +250,7 @@ def _run_out(r: EvaluationRun) -> dict:
         "agent_version": r.agent_version,
         "provider": r.provider,
         "model": r.model,
+        "provider_api": r.provider_api,
         "prompt_version": r.prompt_version,
         "status": r.status,
         "started_at": r.started_at.isoformat() if r.started_at else None,
@@ -193,6 +261,10 @@ def _run_out(r: EvaluationRun) -> dict:
         "average_score": r.average_score,
         "total_cases": r.total_cases,
         "passed_cases": r.passed_cases,
+        "executed_cases": r.executed_cases,
+        "error_cases": r.error_cases,
+        "unpriced_cases": r.unpriced_cases,
+        "failure_reason": r.failure_reason,
         "config": r.config,
         "created_at": r.created_at.isoformat(),
     }
@@ -209,6 +281,12 @@ def _result_out(r: EvaluationResult) -> dict:
         "score": r.score,
         "latency_ms": r.latency_ms,
         "cost": r.cost,
+        "input_tokens": r.input_tokens,
+        "output_tokens": r.output_tokens,
+        "pricing_status": r.pricing_status,
+        "pricing_id": r.pricing_id,
+        "input_price_per_million": float(r.input_price_per_million) if r.input_price_per_million is not None else None,
+        "output_price_per_million": float(r.output_price_per_million) if r.output_price_per_million is not None else None,
         "evaluator_details": r.evaluator_details,
         "error": r.error,
         "human_review_status": r.human_review_status,
