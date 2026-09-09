@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "httpx>=0.27.0",
+    "httpx>=0.28.1",
     "ulid-py>=1.1.0",
 ]
 
