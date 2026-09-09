@@ -53,6 +53,8 @@ Agent (SDK) → POST /ingest/traces/start
                     │
                     ├── Security scanner (regex, no AI)
                     ├── Cost calculation (model_pricing table)
-                    ├── Alert rule evaluation
+                    ├── Runtime events (finding created / trace finished)
+                    ├── Scoped alert rule evaluation in savepoints
+                    ├── Deduplicated in-app alert incidents
                     └── Stored in PostgreSQL
 ```

@@ -630,55 +630,70 @@ async def seed(db: AsyncSession) -> None:
     ))
 
     # ── AlertRules ────────────────────────────────────────────────────────────
-    rule_error_rate = AlertRule(
+    rule_injection = AlertRule(
         organization_id=org.id,
         project_id=proj_assistant.id,
         created_by_id=owner.id,
-        name="High error rate",
-        description="Triggers when trace error rate exceeds 10% over 15 minutes.",
-        condition={"metric": "error_rate", "op": "gt", "threshold": 0.10, "window_minutes": 15},
+        name="Prompt injection detected",
+        description="Creates an incident when the runtime scanner detects prompt injection.",
+        event_type="security.finding.created",
+        condition={"metric": "finding_type", "op": "eq", "value": "prompt_injection"},
         severity=Severity.HIGH,
         status=AlertRuleStatus.ACTIVE,
-        notification_channels={"slack": "#alerts-ai", "email": ["admin@demo.agentops.dev"]},
+        notification_channels=None,
     )
     rule_cost = AlertRule(
         organization_id=org.id,
         created_by_id=owner.id,
-        name="Daily cost spike",
-        description="Triggers when estimated daily cost exceeds $10.",
-        condition={"metric": "daily_cost_usd", "op": "gt", "threshold": 10.0},
+        name="High trace cost",
+        description="Creates an incident when one finished trace costs more than $0.01.",
+        event_type="trace.finished",
+        condition={"metric": "total_cost_usd", "op": "gt", "value": 0.01},
         severity=Severity.MEDIUM,
         status=AlertRuleStatus.ACTIVE,
-        notification_channels={"email": ["owner@demo.agentops.dev"]},
+        notification_channels=None,
     )
-    rule_blocked = AlertRule(
+    rule_secret = AlertRule(
         organization_id=org.id,
         project_id=proj_assistant.id,
         created_by_id=owner.id,
-        name="Security block detected",
-        description="Triggers immediately when any trace is blocked by a security policy.",
-        condition={"metric": "trace_status", "value": "BLOCKED"},
+        name="Secret leak attempt",
+        description="Creates an incident for detected API keys, bearer tokens, or credentials.",
+        event_type="security.finding.created",
+        condition={
+            "metric": "finding_type",
+            "op": "in",
+            "value": ["api_key_detected", "bearer_token_detected", "credential_detected"],
+        },
         severity=Severity.CRITICAL,
         status=AlertRuleStatus.ACTIVE,
-        notification_channels={"slack": "#security"},
+        notification_channels=None,
     )
-    db.add_all([rule_error_rate, rule_cost, rule_blocked])
+    db.add_all([rule_injection, rule_cost, rule_secret])
     await db.flush()
 
     # ── AlertIncidents ────────────────────────────────────────────────────────
     db.add(AlertIncident(
-        rule_id=rule_blocked.id,
+        rule_id=rule_secret.id,
+        event_type="security.finding.created",
+        source_type="security_finding",
+        project_id=proj_assistant.id,
+        severity=Severity.CRITICAL,
         status=AlertIncidentStatus.OPEN,
         triggered_at=t3.started_at + timedelta(seconds=1),
-        context={"trace_id": t3.id, "finding": "PII_EXFILTRATION"},
+        context={"metric": "finding_type", "operator": "in", "actual": "credential_detected"},
     ))
     db.add(AlertIncident(
-        rule_id=rule_error_rate.id,
+        rule_id=rule_injection.id,
+        event_type="security.finding.created",
+        source_type="security_finding",
+        project_id=proj_assistant.id,
+        severity=Severity.HIGH,
         status=AlertIncidentStatus.RESOLVED,
         triggered_at=t2.started_at,
         resolved_at=t2.started_at + timedelta(hours=1),
         resolved_by_id=owner.id,
-        context={"error_rate": 0.50, "window": "15m"},
+        context={"metric": "finding_type", "operator": "eq", "actual": "prompt_injection"},
     ))
 
     # ── Evaluation Dataset ────────────────────────────────────────────────────
@@ -745,8 +760,8 @@ async def seed(db: AsyncSession) -> None:
          f"User {developer.email} invited as DEVELOPER"),
         (None,  "security.finding", "trace",        str(t3.id),       Severity.CRITICAL,
          "PII exfiltration attempt blocked in trace #8823"),
-        (owner, "alert.resolved",   "alert_rule",   str(rule_error_rate.id), Severity.INFO,
-         "Alert 'High error rate' incident resolved manually"),
+        (owner, "alert.incident.resolved", "alert_rule", str(rule_injection.id), Severity.INFO,
+         "Prompt injection incident resolved manually"),
     ]
     for user, etype, ent_type, ent_id, sev, msg in audit_entries:
         db.add(AuditLog(

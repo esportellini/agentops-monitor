@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,12 +20,16 @@ class AlertRule(Base, TimestampMixin):
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     condition: Mapped[dict] = mapped_column(JSONB, nullable=False)
     severity: Mapped[Severity] = mapped_column(
         Enum(Severity, name="severity"), nullable=False, default=Severity.MEDIUM
@@ -35,11 +39,14 @@ class AlertRule(Base, TimestampMixin):
     )
     notification_channels: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    incidents: Mapped[list[AlertIncident]] = relationship(back_populates="rule", cascade="all, delete-orphan")
+    incidents: Mapped[list[AlertIncident]] = relationship(back_populates="rule")
 
 
 class AlertIncident(Base, TimestampMixin):
     __tablename__ = "alert_incidents"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_alert_incident_dedupe_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     rule_id: Mapped[int] = mapped_column(
@@ -51,7 +58,23 @@ class AlertIncident(Base, TimestampMixin):
     resolved_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    trace_id: Mapped[int | None] = mapped_column(
+        ForeignKey("traces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
+    event_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    severity: Mapped[Severity] = mapped_column(
+        Enum(Severity, name="severity"), nullable=False, default=Severity.MEDIUM, index=True
+    )
     status: Mapped[AlertIncidentStatus] = mapped_column(
         Enum(AlertIncidentStatus, name="alert_incident_status"),
         nullable=False,

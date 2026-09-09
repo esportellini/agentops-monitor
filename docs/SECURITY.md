@@ -47,8 +47,8 @@ An active `AgentPolicy` can select `detect`, `redact`, `alert`, or `block` for
 PII, secrets, and prompt injection. `redact` replaces detection-only content
 with `[REDACTED_BY_POLICY]`; `block` replaces the complete matching leaf with
 `[BLOCKED_BY_POLICY]`. Baseline secret and PII redaction remains a safety floor
-for `detect` and `alert`. `alert` records the action on the finding but does not
-create an alert incident.
+for `detect` and `alert`. The `alert` action can be matched by a configured runtime
+alert rule; it does not create an unconditional incident by itself.
 
 ## Tool preflight and trace limits
 
@@ -111,8 +111,21 @@ Project ownership is checked against the API-key organization. Optional agent an
 
 Each batch item runs inside a SQLAlchemy nested transaction. A constraint failure rolls back that item's savepoint while later valid items continue, followed by one outer commit.
 
+## Runtime alerts
+
+New security findings emit `security.finding.created` after safe persistence.
+Finished traces emit `trace.finished` after authoritative token and cost totals
+are calculated. Only configured, active rules in the same organization and
+matching project/agent scope are evaluated.
+
+Incident context contains the rule metric, operator, expected value, actual
+allowlisted value, and relevant IDs. Finding evidence, span content, tool input,
+PII, and secrets are never copied. Alert work uses savepoints and catches failures,
+so evaluator errors do not invalidate the ingest transaction. A deterministic
+rule/event/source key prevents retries from multiplying incidents.
+
 ## Not implemented yet
 
-- alert evaluation or external dispatch from ingest;
+- external alert dispatch and notification channels;
 - provider-backed security classification;
 - background processing.

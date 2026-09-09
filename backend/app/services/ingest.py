@@ -59,6 +59,7 @@ from app.services.policy import (
     resolve_agent_policy,
 )
 from app.services import audit as audit_svc
+from app.services.alerts import TRACE_FINISHED, RuntimeAlertEvent, evaluate_runtime_event
 from app.services.pricing import PRICED, UNPRICED, resolve_model_call_pricing
 from app.services.security import (
     FINDING_COST_LIMIT,
@@ -245,7 +246,7 @@ async def finish_trace(
         raise IngestError(f"Trace '{external_trace_id}' not found", status_code=404)
 
     if trace.status != TraceStatus.RUNNING:
-        # Idempotent: already finished
+        await _evaluate_trace_alerts(db, trace)
         return trace
 
     policy = await resolve_agent_policy(db, trace.organization_id, trace.agent_id)
@@ -296,7 +297,30 @@ async def finish_trace(
         tokens_out=trace.total_output_tokens,
         cost=trace.total_cost,
     )
+    await _evaluate_trace_alerts(db, trace)
     return trace
+
+
+async def _evaluate_trace_alerts(db: AsyncSession, trace: Trace) -> None:
+    await evaluate_runtime_event(db, RuntimeAlertEvent(
+        event_type=TRACE_FINISHED,
+        organization_id=trace.organization_id,
+        project_id=trace.project_id,
+        agent_id=trace.agent_id,
+        trace_id=trace.id,
+        span_id=None,
+        source_type="trace",
+        source_id=str(trace.id),
+        occurred_at=trace.ended_at or datetime.now(timezone.utc),
+        data={
+            "trace_status": trace.status.value,
+            "risk_level": trace.risk_level.value,
+            "total_cost_usd": trace.total_cost,
+            "total_tokens": trace.total_input_tokens + trace.total_output_tokens,
+            "duration_ms": trace.duration_ms,
+            "unpriced_model_calls": trace.unpriced_model_calls,
+        },
+    ))
 
 
 # ── Span ───────────────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.deps import OrgContext, require_analyst, require_org_member, require_role
 from app.db.session import get_db
 from app.models.alert import AlertIncident, AlertRule
-from app.models.enums import MemberRole, Severity
+from app.models.enums import AlertIncidentStatus, AlertRuleStatus, MemberRole, Severity
 from app.models.security import AgentPolicy, SecurityFinding, ToolApproval
 from app.models.project import Agent, Project
 from app.models.trace import Trace
@@ -411,6 +411,30 @@ async def reject_tool(
 
 # ── Alert rules ───────────────────────────────────────────────────────────────
 
+class AlertRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    event_type: str | None = Field(default=None, max_length=64)
+    condition: dict[str, Any]
+    severity: Severity = Severity.MEDIUM
+    project_id: int | None = None
+    agent_id: int | None = None
+
+
+class AlertRuleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    event_type: str | None = Field(default=None, max_length=64)
+    condition: dict[str, Any] | None = None
+    severity: Severity | None = None
+    status: AlertRuleStatus | None = None
+    project_id: int | None = None
+    agent_id: int | None = None
+
+
+class IncidentResolution(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
 @router.get("/alerts/rules")
 async def list_alert_rules(
     ctx: OrgContext = Depends(require_org_member),
@@ -422,11 +446,16 @@ async def list_alert_rules(
 
 @router.post("/alerts/rules", status_code=201)
 async def create_alert_rule(
-    payload: Annotated[dict, Body()],
+    payload: AlertRuleCreate,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    rule = await alerts_svc.create_rule(db, ctx.org_id, payload, created_by_id=ctx.user_id)
+    try:
+        rule = await alerts_svc.create_rule(
+            db, ctx.org_id, payload.model_dump(mode="json"), created_by_id=ctx.user_id
+        )
+    except alerts_svc.AlertRuleValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     await db.commit()
     return _rule_out(rule)
 
@@ -434,11 +463,17 @@ async def create_alert_rule(
 @router.patch("/alerts/rules/{rule_id}")
 async def update_alert_rule(
     rule_id: int,
-    payload: Annotated[dict, Body()],
+    payload: AlertRuleUpdate,
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    rule = await alerts_svc.update_rule(db, rule_id, ctx.org_id, payload)
+    try:
+        rule = await alerts_svc.update_rule(
+            db, rule_id, ctx.org_id, payload.model_dump(mode="json", exclude_unset=True),
+            user_id=ctx.user_id,
+        )
+    except alerts_svc.AlertRuleValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
     await db.commit()
@@ -451,7 +486,7 @@ async def delete_alert_rule(
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    deleted = await alerts_svc.delete_rule(db, rule_id, ctx.org_id)
+    deleted = await alerts_svc.delete_rule(db, rule_id, ctx.org_id, user_id=ctx.user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Rule not found")
     await db.commit()
@@ -461,13 +496,83 @@ async def delete_alert_rule(
 
 @router.get("/alerts/incidents")
 async def list_alert_incidents(
-    status: str | None = Query(default=None),
+    status: AlertIncidentStatus | None = Query(default=None),
+    severity: Severity | None = Query(default=None),
+    rule_id: int | None = Query(default=None),
+    event_type: str | None = Query(default=None, max_length=64),
+    project_id: int | None = Query(default=None),
+    agent_id: int | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     ctx: OrgContext = Depends(require_org_member),
     db: AsyncSession = Depends(get_db),
 ):
-    incidents = await alerts_svc.list_incidents(db, ctx.org_id, status=status, limit=limit)
-    return {"items": [_incident_out(i) for i in incidents]}
+    incidents = await alerts_svc.list_incidents(
+        db, ctx.org_id,
+        status=status.value if status else None,
+        severity=severity.value if severity else None,
+        rule_id=rule_id,
+        event_type=event_type,
+        project_id=project_id,
+        agent_id=agent_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+    return {"items": [await _incident_out(db, item) for item in incidents]}
+
+
+@router.get("/alerts/incidents/{incident_id}")
+async def get_alert_incident(
+    incident_id: int,
+    ctx: OrgContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db),
+):
+    incident = await alerts_svc.get_incident(db, incident_id, ctx.org_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return await _incident_out(db, incident)
+
+
+async def _transition_alert_incident(
+    db: AsyncSession,
+    ctx: OrgContext,
+    incident_id: int,
+    outcome: str,
+    note: str | None = None,
+):
+    incident, error = await alerts_svc.transition_incident(
+        db, incident_id, ctx.org_id, outcome, ctx.user_id, note
+    )
+    if error:
+        raise HTTPException(
+            status_code=404 if error == "not_found" else 409,
+            detail="Incident not found" if error == "not_found" else "Invalid incident transition",
+        )
+    await db.commit()
+    return await _incident_out(db, incident)
+
+
+@router.post("/alerts/incidents/{incident_id}/acknowledge")
+async def acknowledge_alert_incident(
+    incident_id: int,
+    ctx: OrgContext = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _transition_alert_incident(db, ctx, incident_id, "ACKNOWLEDGED")
+
+
+@router.post("/alerts/incidents/{incident_id}/resolve")
+async def resolve_alert_incident(
+    incident_id: int,
+    payload: IncidentResolution,
+    ctx: OrgContext = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _transition_alert_incident(
+        db, ctx, incident_id, "RESOLVED", payload.note
+    )
 
 
 @router.patch("/alerts/incidents/{incident_id}")
@@ -477,13 +582,12 @@ async def update_alert_incident(
     ctx: OrgContext = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    incident = await alerts_svc.update_incident(
-        db, incident_id, ctx.org_id, payload, user_id=ctx.user_id
+    outcome = payload.get("status")
+    if outcome not in {"ACKNOWLEDGED", "RESOLVED"}:
+        raise HTTPException(status_code=422, detail="Unsupported incident status")
+    return await _transition_alert_incident(
+        db, ctx, incident_id, outcome, payload.get("note")
     )
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    await db.commit()
-    return _incident_out(incident)
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
@@ -560,8 +664,11 @@ def _rule_out(r: AlertRule) -> dict:
     return {
         "id": r.id,
         "organization_id": r.organization_id,
+        "project_id": r.project_id,
+        "agent_id": r.agent_id,
         "name": r.name,
         "description": r.description,
+        "event_type": r.event_type,
         "condition": r.condition,
         "severity": r.severity,
         "status": r.status,
@@ -570,10 +677,23 @@ def _rule_out(r: AlertRule) -> dict:
     }
 
 
-def _incident_out(i: AlertIncident) -> dict:
+async def _incident_out(db: AsyncSession, i: AlertIncident) -> dict:
+    rule = await db.scalar(select(AlertRule).where(AlertRule.id == i.rule_id))
+    trace = await db.scalar(select(Trace).where(Trace.id == i.trace_id)) if i.trace_id else None
+    agent = await db.scalar(select(Agent).where(Agent.id == i.agent_id)) if i.agent_id else None
     return {
         "id": i.id,
         "rule_id": i.rule_id,
+        "rule_name": rule.name if rule else None,
+        "event_type": i.event_type,
+        "source_type": i.source_type,
+        "source_id": i.source_id,
+        "trace_id": i.trace_id,
+        "external_trace_id": trace.external_trace_id if trace else None,
+        "project_id": i.project_id,
+        "agent_id": i.agent_id,
+        "agent_name": agent.name if agent else None,
+        "severity": i.severity,
         "status": i.status,
         "triggered_at": i.triggered_at.isoformat(),
         "acknowledged_at": i.acknowledged_at.isoformat() if i.acknowledged_at else None,

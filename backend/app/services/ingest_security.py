@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,11 @@ from app.models.security import AgentPolicy, SecurityFinding
 from app.models.trace import Span, Trace
 from app.services.security import RuleMatch
 from app.services.policy import resolve_security_action
+from app.services.alerts import (
+    SECURITY_FINDING_CREATED,
+    RuntimeAlertEvent,
+    evaluate_runtime_event,
+)
 
 log = get_logger(__name__)
 
@@ -126,6 +132,25 @@ async def persist_findings(
 
     if created:
         await db.flush()
+        now = datetime.now(timezone.utc)
+        for finding in created:
+            await evaluate_runtime_event(db, RuntimeAlertEvent(
+                event_type=SECURITY_FINDING_CREATED,
+                organization_id=trace.organization_id,
+                project_id=trace.project_id,
+                agent_id=trace.agent_id,
+                trace_id=trace.id,
+                span_id=span.id if span else None,
+                source_type="security_finding",
+                source_id=str(finding.id),
+                occurred_at=finding.created_at or now,
+                data={
+                    "finding_type": finding.finding_type,
+                    "severity": finding.severity.value,
+                    "action_taken": finding.action_taken,
+                    "policy_id": policy.id if policy else None,
+                },
+            ))
     return created
 
 
@@ -172,4 +197,21 @@ async def persist_policy_finding(
     db.add(finding)
     trace.risk_level = max_severity(trace.risk_level, severity)
     await db.flush()
+    await evaluate_runtime_event(db, RuntimeAlertEvent(
+        event_type=SECURITY_FINDING_CREATED,
+        organization_id=trace.organization_id,
+        project_id=trace.project_id,
+        agent_id=trace.agent_id,
+        trace_id=trace.id,
+        span_id=span.id if span else None,
+        source_type="security_finding",
+        source_id=str(finding.id),
+        occurred_at=finding.created_at or datetime.now(timezone.utc),
+        data={
+            "finding_type": finding.finding_type,
+            "severity": finding.severity.value,
+            "action_taken": finding.action_taken,
+            "policy_id": safe_evidence.get("policy_id"),
+        },
+    ))
     return finding

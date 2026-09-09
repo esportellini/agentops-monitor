@@ -42,6 +42,13 @@ AgentOps Monitor é uma plataforma B2B multi-tenant que coleta traces hierárqui
 - Aprovação humana por tentativa, com revalidação e consumo único
 - Detecção post-hoc de violações sem reescrever o status informado pela aplicação
 
+### Alerts
+- Eventos reais para novos security findings e traces finalizadas
+- Regras validadas por organização, projeto ou agente
+- Incidentes deduplicados com provenance e severity histórica
+- Workflow operacional `OPEN → ACKNOWLEDGED → RESOLVED`
+- Dashboard para criar regras, filtrar incidentes, reconhecer e resolver
+
 ### Semântica das políticas
 
 O endpoint `POST /ingest/policy/check-tool` recebe o ID externo da trace, o nome da
@@ -53,8 +60,9 @@ quando o uso é maior que o valor configurado; igualdade ainda é permitida. Qua
 há model calls sem preço e o custo conhecido não excedeu o limite, o estado do
 orçamento é `UNKNOWN`.
 
-As ações `detect`, `redact`, `alert` e `block` são registradas no finding. Nesta
-fase, `alert` não cria incidentes. `REQUIRE_APPROVAL` cria uma solicitação humana
+As ações `detect`, `redact`, `alert` e `block` são registradas no finding. Uma
+regra pode usar `action_taken == alert` para criar um incidente configurável;
+a action isolada não cria spam obrigatório. `REQUIRE_APPROVAL` cria uma solicitação humana
 por tentativa, decidida por membros com role `ANALYST` ou superior. `block`
 substitui o conteúdo correspondente antes da
 persistência. Mesmo com captura de entradas ou saídas desativada, o backend faz a
@@ -255,6 +263,7 @@ Migrations (ordem):
 7. `0007_evaluations` — expand evaluation tables
 8. `0008_authoritative_pricing` — pricing por organização, status e provenance de custo
 9. `0009_tool_approval_runtime` — approval idempotente, consumo único e provenance
+10. `0010_runtime_alerts` — eventos runtime, escopos, dedupe e provenance de incidentes
 
 ---
 
@@ -282,7 +291,8 @@ Agent → SDK → /ingest
                 ├── redação de PII, tokens e secrets antes do storage
                 ├── persistência do trace/span/tool/event sanitizado
                 ├── criação de SecurityFinding com evidência segura
-                └── agregação monotônica de Trace.risk_level
+                ├── agregação monotônica de Trace.risk_level
+                └── avaliação isolada de regras e criação de incidentes in-app
 ```
 
 ### Fluxo de custos
@@ -311,8 +321,7 @@ preços atuais dos providers. Pricing é versionado e configurável por vigênci
 ## Limitações
 
 - Providers reais (OpenAI, Anthropic) nas avaliações requerem integração adicional
-- Alertas não são criados automaticamente pelo enforcement de políticas
-- Notificações externas (Slack, email) estão preparadas na estrutura mas não implementadas
+- Notificações externas (Slack, email) não fazem parte da v0.2
 - SSO (SAML/OIDC) não implementado nesta versão
 - Streaming de ingestão não suportado (batches recomendados para alto volume)
 - Encryption at rest é responsabilidade da camada de infraestrutura
@@ -326,6 +335,7 @@ preços atuais dos providers. Pricing é versionado e configurável por vigênci
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Stack, topologia, data flow |
 | [PYTHON_SDK.md](docs/PYTHON_SDK.md) | SDK installation, usage, resilience |
 | [SECURITY.md](docs/SECURITY.md) | Scanner, policies, multi-tenancy |
+| [runtime-alerts.md](docs/architecture/runtime-alerts.md) | Runtime events, rules, incidents e dedupe |
 | [EVALUATIONS.md](docs/EVALUATIONS.md) | Datasets, evaluators, comparison |
 | [LGPD_AND_PRIVACY.md](docs/LGPD_AND_PRIVACY.md) | Data map, retention, subject rights |
 | [ROADMAP.md](docs/ROADMAP.md) | v0.2 → v1.0 planned features |
