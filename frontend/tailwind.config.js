@@ -5,34 +5,21 @@ export default {
     extend: {
       colors: {
         brand: {
-          50: "#f0f4ff",
-          100: "#e0e9ff",
-          500: "#4361ee",
-          600: "#3451d1",
-          700: "#2541b2",
-          900: "#0d1f6e",
+          50: "#f1efff", 100: "#e1ddff", 500: "#7c6ff2", 600: "#6d5fe5", 700: "#5d50c8", 900: "#29235e",
         },
         surface: {
-          DEFAULT: "#0f111a",
-          card: "#151823",
-          border: "#1e2235",
-          muted: "#262c42",
+          DEFAULT: "var(--canvas)", card: "var(--surface)", border: "var(--border)", muted: "var(--hover)",
         },
         text: {
-          primary: "#e8eaf6",
-          secondary: "#8b92b8",
-          muted: "#555e82",
+          primary: "var(--text)", secondary: "var(--secondary)", muted: "var(--muted)",
         },
         status: {
-          ok: "#22c55e",
-          warn: "#f59e0b",
-          error: "#ef4444",
-          info: "#3b82f6",
+          ok: "var(--success)", warn: "var(--warning)", error: "var(--danger)", info: "var(--info)",
         },
       },
       fontFamily: {
-        sans: ["var(--font-inter)", "system-ui", "sans-serif"],
-        mono: ["var(--font-mono)", "JetBrains Mono", "monospace"],
+        sans: ["ui-sans-serif", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
     },
   },

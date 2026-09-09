@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 
 const sections = [
@@ -26,7 +27,7 @@ export default function SettingsPage() {
                 <p className="text-sm font-medium text-text-primary group-hover:text-brand-500 transition-colors">{s.title}</p>
                 <p className="text-xs text-text-secondary mt-0.5">{s.description}</p>
               </div>
-              <svg className="h-4 w-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+              <ChevronRight className="h-4 w-4 text-text-muted" />
             </Link>
           ))}
         </div>

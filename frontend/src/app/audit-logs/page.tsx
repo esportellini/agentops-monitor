@@ -9,7 +9,7 @@ import { API_URL } from "@/lib/api";
 
 interface Log { id: number; event_type: string; severity: string; message: string; entity_type: string|null; entity_id: string|null; user_id: number|null; ip_address: string|null; before_data: Record<string,unknown> | null; after_data: Record<string,unknown> | null; created_at: string; }
 
-const SEV: Record<string,string> = { CRITICAL: "text-red-400", HIGH: "text-orange-400", MEDIUM: "text-yellow-400", LOW: "text-status-ok", INFO: "text-text-muted" };
+const SEV: Record<string,string> = { CRITICAL: "text-status-error", HIGH: "text-status-error", MEDIUM: "text-status-warn", LOW: "text-status-ok", INFO: "text-text-muted" };
 
 export default function AuditLogsPage() {
   const { activeOrg, accessToken } = useAuth();

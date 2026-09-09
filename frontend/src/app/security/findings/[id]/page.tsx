@@ -28,9 +28,9 @@ interface Finding {
 }
 
 const SEV_BADGE: Record<string, string> = {
-  CRITICAL: "text-red-400 bg-red-400/10 border border-red-400/30",
-  HIGH: "text-orange-400 bg-orange-400/10 border border-orange-400/30",
-  MEDIUM: "text-yellow-400 bg-yellow-400/10 border border-yellow-400/30",
+  CRITICAL: "text-status-error bg-status-error/10 border border-status-error/30",
+  HIGH: "text-status-error bg-status-error/10 border border-status-error/30",
+  MEDIUM: "text-status-warn bg-status-warn/10 border border-status-warn/30",
   LOW: "text-status-ok bg-status-ok/10 border border-status-ok/30",
   INFO: "text-text-muted bg-surface-muted border border-surface-border",
 };
@@ -138,8 +138,8 @@ export default function FindingDetailPage() {
 
           {/* Redacted content */}
           {finding.redacted_content && (
-            <section className="rounded-lg border border-blue-400/20 bg-blue-400/5 p-4">
-              <h2 className="mb-2 text-sm font-semibold text-blue-400">Redacted content</h2>
+            <section className="rounded-lg border border-status-info/20 bg-status-info/5 p-4">
+              <h2 className="mb-2 text-sm font-semibold text-status-info">Redacted content</h2>
               <pre className="text-xs text-text-secondary overflow-x-auto whitespace-pre-wrap">
                 {finding.redacted_content}
               </pre>

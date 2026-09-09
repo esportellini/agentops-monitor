@@ -29,17 +29,17 @@ interface Overview {
 }
 
 const SEV_COLORS: Record<string, string> = {
-  CRITICAL: "text-red-400 bg-red-400/10 border-red-400/30",
-  HIGH: "text-orange-400 bg-orange-400/10 border-orange-400/30",
-  MEDIUM: "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
+  CRITICAL: "text-status-error bg-status-error/10 border-status-error/30",
+  HIGH: "text-status-error bg-status-error/10 border-status-error/30",
+  MEDIUM: "text-status-warn bg-status-warn/10 border-status-warn/30",
   LOW: "text-status-ok bg-status-ok/10 border-status-ok/30",
   INFO: "text-text-muted bg-surface-muted border-surface-border",
 };
 
 const ACTION_COLORS: Record<string, string> = {
-  block: "text-red-400",
-  alert: "text-yellow-400",
-  redact: "text-blue-400",
+  block: "text-status-error",
+  alert: "text-status-warn",
+  redact: "text-status-info",
   detect: "text-text-muted",
 };
 
@@ -98,9 +98,9 @@ export default function SecurityPage() {
 
         {/* Overview cards */}
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-          <div className="rounded-lg border border-red-400/30 bg-red-400/5 p-4">
+          <div className="rounded-lg border border-status-error/30 bg-status-error/5 p-4">
             <p className="text-xs text-text-muted">Unresolved</p>
-            <p className="mt-1 text-2xl font-bold text-red-400">{overview?.unresolved_total ?? 0}</p>
+            <p className="mt-1 text-2xl font-bold text-status-error">{overview?.unresolved_total ?? 0}</p>
           </div>
           {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((sev) => (
             <div key={sev} className={cn("rounded-lg border p-4", SEV_COLORS[sev])}>

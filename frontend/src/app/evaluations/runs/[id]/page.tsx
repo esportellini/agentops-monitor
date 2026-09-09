@@ -23,7 +23,7 @@ interface Run {
   results: Result[];
 }
 
-const REVIEW_COLORS: Record<string,string> = { approved: "text-status-ok", rejected: "text-status-error", needs_review: "text-yellow-400" };
+const REVIEW_COLORS: Record<string,string> = { approved: "text-status-ok", rejected: "text-status-error", needs_review: "text-status-warn" };
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -126,7 +126,7 @@ export default function RunDetailPage() {
                   <div className="flex gap-2">
                     <button onClick={() => handleReview(r.id, "approved")} className="rounded px-3 py-1 text-xs font-medium text-white bg-status-ok hover:opacity-90">Approve</button>
                     <button onClick={() => handleReview(r.id, "rejected")} className="rounded px-3 py-1 text-xs font-medium text-white bg-status-error hover:opacity-90">Reject</button>
-                    <button onClick={() => handleReview(r.id, "needs_review")} className="rounded px-3 py-1 text-xs font-medium text-yellow-400 border border-yellow-400/30 hover:bg-yellow-400/10">Needs review</button>
+                    <button onClick={() => handleReview(r.id, "needs_review")} className="rounded px-3 py-1 text-xs font-medium text-status-warn border border-status-warn/30 hover:bg-status-warn/10">Needs review</button>
                   </div>
                 </div>
               )}

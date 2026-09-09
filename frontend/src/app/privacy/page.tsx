@@ -10,8 +10,8 @@ interface DataMapItem { category: string; table: string; sensitivity: string; pu
 interface RetentionPolicy { id: number|null; traces_retention_days: number|null; spans_retention_days: number|null; audit_logs_retention_days: number|null; cost_records_retention_days: number|null; anonymize_user_references: boolean; }
 interface PrivacyRequest { id: number; type: string; status: string; subject_reference: string; notes: string|null; created_at: string; completed_at: string|null; }
 
-const SENS: Record<string,string> = { CRITICAL: "text-red-400", HIGH: "text-orange-400", MEDIUM: "text-yellow-400", LOW: "text-status-ok" };
-const STATUS_C: Record<string,string> = { PENDING: "text-yellow-400", IN_PROGRESS: "text-brand-500", COMPLETED: "text-status-ok", REJECTED: "text-status-error" };
+const SENS: Record<string,string> = { CRITICAL: "text-status-error", HIGH: "text-status-error", MEDIUM: "text-status-warn", LOW: "text-status-ok" };
+const STATUS_C: Record<string,string> = { PENDING: "text-status-warn", IN_PROGRESS: "text-brand-500", COMPLETED: "text-status-ok", REJECTED: "text-status-error" };
 
 export default function PrivacyPage() {
   const { activeOrg } = useAuth();
@@ -89,7 +89,7 @@ export default function PrivacyPage() {
                     <td className="px-4 py-3 text-xs font-mono text-text-secondary">{i.table}</td>
                     <td className="px-4 py-3"><span className={cn("text-xs font-medium", SENS[i.sensitivity])}>{i.sensitivity}</span></td>
                     <td className="px-4 py-3 text-xs text-text-secondary max-w-xs">{i.purpose}</td>
-                    <td className="px-4 py-3 text-xs">{i.contains_pii_risk ? <span className="text-orange-400">Yes</span> : <span className="text-text-muted">No</span>}</td>
+                    <td className="px-4 py-3 text-xs">{i.contains_pii_risk ? <span className="text-status-error">Yes</span> : <span className="text-text-muted">No</span>}</td>
                     <td className="px-4 py-3 text-xs">{i.can_disable ? <span className="text-status-ok">Yes</span> : <span className="text-text-muted">No</span>}</td>
                   </tr>
                 ))}
@@ -159,7 +159,7 @@ export default function PrivacyPage() {
                 <button onClick={() => handleAction("export")} disabled={submitting}
                   className="rounded-md border border-surface-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-muted disabled:opacity-50 transition-colors">Export data</button>
                 <button onClick={() => handleAction("anonymize")} disabled={submitting || !subject}
-                  className="rounded-md border border-yellow-400/30 bg-yellow-400/10 px-4 py-2 text-sm text-yellow-400 hover:bg-yellow-400/20 disabled:opacity-50 transition-colors">Anonymize</button>
+                  className="rounded-md border border-status-warn/30 bg-status-warn/10 px-4 py-2 text-sm text-status-warn hover:bg-status-warn/20 disabled:opacity-50 transition-colors">Anonymize</button>
               </div>
             </div>
             <div className="rounded-lg border border-surface-border bg-surface-card p-5 space-y-3">

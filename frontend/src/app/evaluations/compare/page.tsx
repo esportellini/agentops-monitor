@@ -75,7 +75,7 @@ export default function ComparePage() {
 
         {comparing && <div className="text-sm text-text-muted">Comparing…</div>}
         {error && <div className="text-sm text-status-error">Error loading comparison.</div>}
-        {runA === runB && runA && <div className="text-sm text-yellow-400">Select two different runs.</div>}
+        {runA === runB && runA && <div className="text-sm text-status-warn">Select two different runs.</div>}
 
         {comparison && (
           <div className="space-y-6">
@@ -125,7 +125,7 @@ export default function ComparePage() {
                   </div>
                 ))}
               </div>
-              {!comparison.cost_comparison_complete && <p className="mt-3 text-xs text-yellow-400">Cost comparison is incomplete because at least one run contains unpriced cases.</p>}
+              {!comparison.cost_comparison_complete && <p className="mt-3 text-xs text-status-warn">Cost comparison is incomplete because at least one run contains unpriced cases.</p>}
             </div>
 
             {/* Case outcomes */}

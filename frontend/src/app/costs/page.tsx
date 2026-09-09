@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAuthFetch } from "@/hooks/useAuthFetch";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
@@ -26,6 +27,7 @@ interface Projection {
   days_elapsed: number;
   days_remaining: number;
 }
+interface CostPoint { bucket: string; cost_usd: number; }
 
 const PERIODS = [
   { label: "Today", days: 1 },
@@ -80,6 +82,11 @@ export default function CostsPage() {
     queryFn: () => fetch.get(`${base}/costs/projection`),
     enabled: !!activeOrg,
   });
+  const { data: costTrend = [] } = useQuery<CostPoint[]>({
+    queryKey: ["cost-timeseries", activeOrg?.id, days],
+    queryFn: () => fetch.get(`${base}/metrics/timeseries?days=${days}`),
+    enabled: !!activeOrg,
+  });
 
   return (
     <ProtectedLayout>
@@ -117,12 +124,14 @@ export default function CostsPage() {
             ))}
           </div>
           <input
+            aria-label="Filter by provider"
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
             placeholder="Provider (e.g. openai)"
             className="rounded-md border border-surface-border bg-surface px-3 py-2 text-xs text-text-primary focus:border-brand-500 focus:outline-none w-40"
           />
           <input
+            aria-label="Filter by model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="Model (e.g. gpt-4o)"
@@ -141,7 +150,7 @@ export default function CostsPage() {
         {/* Top KPIs */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {[
-            ["Total cost", fmtCost(summary?.total_cost_usd ?? 0)],
+            [summary?.unpriced_model_calls ? "Known spend" : "Spend", fmtCost(summary?.total_cost_usd ?? 0)],
             ["Executions", (summary?.total_executions ?? 0).toLocaleString()],
             ["Cost / execution", fmtCost(summary?.avg_cost_per_execution_usd ?? 0)],
             ["Monthly projection", fmtCost(summary?.monthly_projection_usd ?? 0)],
@@ -177,6 +186,13 @@ export default function CostsPage() {
             </div>
           </div>
         )}
+
+        <section className="rounded-lg border border-surface-border bg-surface-card p-5">
+          <div className="mb-4"><h2 className="text-sm font-semibold text-text-primary">Known cost trend</h2><p className="mt-1 text-xs text-text-muted">Authoritatively priced spend per day.</p></div>
+          <div className="h-56">
+            {costTrend.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={costTrend}><defs><linearGradient id="costFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#7c6ff2" stopOpacity={0.3}/><stop offset="1" stopColor="#7c6ff2" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="rgba(255,255,255,.05)"/><XAxis dataKey="bucket" tickFormatter={(value) => new Date(value).toLocaleDateString(undefined,{month:"short",day:"numeric"})} tick={{fill:"#737c8b",fontSize:10}} tickLine={false} axisLine={false}/><YAxis tick={{fill:"#737c8b",fontSize:10}} tickLine={false} axisLine={false} width={42}/><Tooltip contentStyle={{background:"#15191f",border:"1px solid rgba(255,255,255,.12)",borderRadius:7,fontSize:11}} formatter={(value:number)=>fmtCost(value)}/><Area type="monotone" dataKey="cost_usd" stroke="#9187ff" strokeWidth={2} fill="url(#costFill)"/></AreaChart></ResponsiveContainer> : <div className="chart-empty">No priced usage in this period.</div>}
+          </div>
+        </section>
 
         {/* Cost by model */}
         <div className="rounded-lg border border-surface-border bg-surface-card p-5">

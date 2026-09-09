@@ -1,109 +1,21 @@
 "use client";
-
-import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { Building2, Check, ChevronDown, LogOut, Menu, Settings, UserRound } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
-export function Topbar() {
+const names: Record<string, string> = { dashboard: "Overview", traces: "Traces", costs: "Costs", security: "Security", approvals: "Approvals", alerts: "Alerts", evaluations: "Evaluations", projects: "Projects", agents: "Agents", "api-keys": "API Keys", members: "Members", "audit-logs": "Audit Logs", privacy: "Privacy", settings: "Settings", profile: "Profile" };
+
+export function Topbar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
   const { user, organizations, activeOrg, setActiveOrg, logout } = useAuth();
-  const router = useRouter();
-  const [orgOpen, setOrgOpen] = useState(false);
-  const [userOpen, setUserOpen] = useState(false);
-  const orgRef = useRef<HTMLDivElement>(null);
-  const userRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handle(e: MouseEvent) {
-      if (orgRef.current && !orgRef.current.contains(e.target as Node)) setOrgOpen(false);
-      if (userRef.current && !userRef.current.contains(e.target as Node)) setUserOpen(false);
-    }
-    document.addEventListener("mousedown", handle);
-    return () => document.removeEventListener("mousedown", handle);
-  }, []);
-
-  async function handleLogout() {
-    await logout();
-    router.push("/login");
-  }
-
-  return (
-    <header className="flex h-14 items-center justify-between border-b border-surface-border bg-surface-card px-5">
-      {/* Org switcher */}
-      <div className="relative" ref={orgRef}>
-        <button
-          onClick={() => setOrgOpen((o) => !o)}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-primary hover:bg-surface-muted transition-colors"
-        >
-          <span className="font-medium">{activeOrg?.name ?? "No org selected"}</span>
-          <svg className="h-3.5 w-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-
-        {orgOpen && organizations.length > 0 && (
-          <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-surface-border bg-surface-card py-1 shadow-xl">
-            {organizations.map((org) => (
-              <button
-                key={org.id}
-                onClick={() => {
-                  setActiveOrg(org);
-                  setOrgOpen(false);
-                }}
-                className={cn(
-                  "w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-muted",
-                  org.id === activeOrg?.id ? "text-brand-500 font-medium" : "text-text-secondary"
-                )}
-              >
-                {org.name}
-                <span className="ml-1.5 text-xs text-text-muted">{org.plan}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* User menu */}
-      <div className="relative" ref={userRef}>
-        <button
-          onClick={() => setUserOpen((o) => !o)}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-surface-muted transition-colors"
-        >
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-500/20 text-xs font-semibold text-brand-500 uppercase">
-            {user?.name?.[0] ?? "?"}
-          </div>
-          <span className="text-text-secondary hidden sm:block">{user?.name}</span>
-        </button>
-
-        {userOpen && (
-          <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-surface-border bg-surface-card py-1 shadow-xl">
-            <div className="border-b border-surface-border px-3 py-2">
-              <p className="text-xs font-medium text-text-primary truncate">{user?.name}</p>
-              <p className="text-xs text-text-muted truncate">{user?.email}</p>
-            </div>
-            <button
-              onClick={() => { setUserOpen(false); router.push("/profile"); }}
-              className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-muted transition-colors"
-            >
-              Profile
-            </button>
-            <button
-              onClick={() => { setUserOpen(false); router.push("/settings"); }}
-              className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-muted transition-colors"
-            >
-              Settings
-            </button>
-            <div className="border-t border-surface-border mt-1 pt-1">
-              <button
-                onClick={handleLogout}
-                className="w-full px-3 py-2 text-left text-sm text-status-error hover:bg-surface-muted transition-colors"
-              >
-                Sign out
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </header>
-  );
+  const pathname = usePathname(); const router = useRouter();
+  const [orgOpen, setOrgOpen] = useState(false); const [userOpen, setUserOpen] = useState(false);
+  const orgRef = useRef<HTMLDivElement>(null); const userRef = useRef<HTMLDivElement>(null);
+  const context = names[pathname.split("/").filter(Boolean)[0]] ?? "AgentOps";
+  useEffect(() => { const close = (event: MouseEvent) => { if (orgRef.current && !orgRef.current.contains(event.target as Node)) setOrgOpen(false); if (userRef.current && !userRef.current.contains(event.target as Node)) setUserOpen(false); }; const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setOrgOpen(false); setUserOpen(false); } }; document.addEventListener("mousedown", close); document.addEventListener("keydown", escape); return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); }; }, []);
+  return <header className="topbar"><div className="topbar-context"><button className="icon-button mobile-trigger" onClick={onOpenNavigation} aria-label="Open navigation"><Menu size={18} /></button><span className="breadcrumb-root">AgentOps</span><span className="breadcrumb-separator">/</span><strong>{context}</strong></div><div className="topbar-actions">
+    <div className="menu-anchor" ref={orgRef}><button className="organization-trigger" onClick={() => setOrgOpen(!orgOpen)} aria-expanded={orgOpen}><Building2 size={15} /><span>{activeOrg?.name ?? "Select organization"}</span><ChevronDown size={13} /></button>{orgOpen && <div className="menu-panel menu-left" role="menu"><p className="menu-label">Organization</p>{organizations.map((org) => <button role="menuitem" key={org.id} onClick={() => { setActiveOrg(org); setOrgOpen(false); }} className="menu-item"><span><strong>{org.name}</strong><small>{org.plan}</small></span>{org.id === activeOrg?.id && <Check size={14} />}</button>)}</div>}</div>
+    <div className="menu-anchor" ref={userRef}><button className="user-trigger" onClick={() => setUserOpen(!userOpen)} aria-expanded={userOpen} aria-label="Open user menu"><span>{user?.name?.[0]?.toUpperCase() ?? "U"}</span><ChevronDown size={13} /></button>{userOpen && <div className="menu-panel menu-right" role="menu"><div className="user-summary"><strong>{user?.name}</strong><small>{user?.email}</small></div><button className="menu-item" onClick={() => router.push("/profile")}><UserRound size={15} />Profile</button><button className="menu-item" onClick={() => router.push("/settings")}><Settings size={15} />Settings</button><button className={cn("menu-item", "menu-danger")} onClick={async () => { await logout(); router.push("/login"); }}><LogOut size={15} />Sign out</button></div>}</div>
+  </div></header>;
 }
